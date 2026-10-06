@@ -44,9 +44,10 @@ function Expand-Zip([string]$zip,[string]$dest){
 }
 
 $javaDir=Join-Path $tools 'java'
-if(-not (Test-Path (Join-Path $javaDir 'bin\java.exe'))){
-  $tmp=Join-Path $env:TEMP 'apkstudio-jre.zip'
-  Download 'https://api.adoptium.net/v3/binary/latest/21/ga/windows/x64/jre/hotspot/normal/eclipse' $tmp
+# A full JDK is required because APK Studio signs rebuilt APKs with keytool/jarsigner.
+if((-not (Test-Path (Join-Path $javaDir 'bin\java.exe'))) -or (-not (Test-Path (Join-Path $javaDir 'bin\jarsigner.exe')))){
+  $tmp=Join-Path $env:TEMP 'apkstudio-jdk.zip'
+  Download 'https://api.adoptium.net/v3/binary/latest/21/ga/windows/x64/jdk/hotspot/normal/eclipse' $tmp
   $extract=Join-Path $env:TEMP ('apkstudio-jre-'+[guid]::NewGuid())
   Expand-Zip $tmp $extract
   $child=Get-ChildItem $extract -Directory | Select-Object -First 1
