@@ -4,14 +4,14 @@ ROOT="$(cd "$(dirname "$0")" && pwd)"
 TOOLS="$ROOT/.tools"
 mkdir -p "$TOOLS/jadx" "$TOOLS/apktool"
 
-if [ ! -x "$TOOLS/java/bin/java" ]; then
-  echo "Installing Temurin JRE 21..."
-  rm -rf "$TOOLS/java" "$TOOLS/jre"
-  mkdir -p "$TOOLS/jre"
-  curl -L --fail --retry 3 "https://api.adoptium.net/v3/binary/latest/21/ga/linux/x64/jre/hotspot/normal/eclipse" -o "$TOOLS/jre.tar.gz"
-  tar -xzf "$TOOLS/jre.tar.gz" -C "$TOOLS/jre" --strip-components=1
-  mv "$TOOLS/jre" "$TOOLS/java"
-  rm -f "$TOOLS/jre.tar.gz"
+if [ ! -x "$TOOLS/java/bin/java" ] || [ ! -x "$TOOLS/java/bin/jarsigner" ]; then
+  echo "Installing Temurin JDK 21 for APK signing..."
+  rm -rf "$TOOLS/java" "$TOOLS/jdk"
+  mkdir -p "$TOOLS/jdk"
+  curl -L --fail --retry 3 "https://api.adoptium.net/v3/binary/latest/21/ga/linux/x64/jdk/hotspot/normal/eclipse" -o "$TOOLS/jdk.tar.gz"
+  tar -xzf "$TOOLS/jdk.tar.gz" -C "$TOOLS/jdk" --strip-components=1
+  mv "$TOOLS/jdk" "$TOOLS/java"
+  rm -f "$TOOLS/jdk.tar.gz"
 fi
 
 if [ ! -f "$TOOLS/jadx/lib/jadx-1.5.6-all.jar" ]; then
