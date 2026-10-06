@@ -8,6 +8,12 @@ const localMode = process.env.LOCAL_PROCESSOR === '1';
 const javaXmx = process.env.APK_STUDIO_JAVA_XMX || (localMode ? '4096m' : '352m');
 const javaXms = process.env.APK_STUDIO_JAVA_XMS || (localMode ? '256m' : '64m');
 const workerThreads = String(Number(process.env.APK_STUDIO_THREADS || (localMode ? 4 : 1)));
+const javaBinDir = path.dirname(java);
+const isWindows = process.platform === 'win32';
+const keytoolBin = path.join(javaBinDir,isWindows?'keytool.exe':'keytool');
+const jarsignerBin = path.join(javaBinDir,isWindows?'jarsigner.exe':'jarsigner');
+const signingAlias = 'apkstudio';
+const signingPassword = 'apkstudio-local-signing';
 
 export async function decompile(id,{forceJadxOom=false,skipPerDex=false}={}){
   const dir=projectDir(id),apk=path.join(dir,'original.apk'),readable=path.join(dir,'readable'),editable=path.join(dir,'editable');
@@ -127,11 +133,54 @@ export async function rebuild(id){
   await log(id,`Build resources: heap=${javaXmx}, threads=${workerThreads}, local=${localMode}`);
   try{
     const artifact=path.join(output,'app-rebuilt-unsigned.apk');
+    const signedArtifact=path.join(output,'app-rebuilt-signed.apk');
+    const keystore=path.join(dir,'apkstudio-signing.jks');
     await run(id,java,[
       '-Xms'+javaXms,'-Xmx'+javaXmx,'-XX:+UseSerialGC',
       '-jar',apktoolJar,'b','-j',workerThreads,editable,'-o',artifact
     ],[0],{idleTimeoutMs:180000,timeoutMs:1200000});
-    await writeMeta(id,{buildStatus:'ready',buildArtifact:'output/app-rebuilt-unsigned.apk'});
+
+    if(!await fs.pathExists(keytoolBin) || !await fs.pathExists(jarsignerBin)){
+      throw new Error('APK signing tools are missing. Update the APK Studio Local Agent so it installs a full JDK.');
+    }
+
+    if(!await fs.pathExists(keystore)){
+      await log(id,'Generating APK Studio project signing key...');
+      await run(id,keytoolBin,[
+        '-genkeypair',
+        '-keystore',keystore,
+        '-storepass',signingPassword,
+        '-keypass',signingPassword,
+        '-alias',signingAlias,
+        '-keyalg','RSA',
+        '-keysize','2048',
+        '-validity','10000',
+        '-dname','CN=APK Studio,O=APK Studio,C=US',
+        '-noprompt'
+      ],[0],{timeoutMs:120000});
+    }
+
+    await log(id,'Signing rebuilt APK...');
+    await run(id,jarsignerBin,[
+      '-keystore',keystore,
+      '-storepass',signingPassword,
+      '-keypass',signingPassword,
+      '-sigalg','SHA256withRSA',
+      '-digestalg','SHA-256',
+      '-signedjar',signedArtifact,
+      artifact,
+      signingAlias
+    ],[0],{timeoutMs:180000});
+
+    await log(id,'Verifying APK signature...');
+    await run(id,jarsignerBin,['-verify','-strict',signedArtifact],[0],{timeoutMs:120000});
+
+    await writeMeta(id,{
+      buildStatus:'ready',
+      buildArtifact:'output/app-rebuilt-signed.apk',
+      buildSigned:true,
+      signingType:'APK Studio project key'
+    });
   }catch(e){
     const buildError=shortError(e);
     await log(id,'BUILD ERROR: '+buildError);
