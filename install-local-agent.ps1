@@ -38,14 +38,33 @@ Get-CimInstance Win32_Process -ErrorAction SilentlyContinue |
   Where-Object { $_.CommandLine -like '*APKStudioLocal*server.mjs*' } |
   ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }
 
-# Refresh app files.
+# Refresh app files while preserving downloaded tools and dependencies.
 $repoZip=Join-Path $env:TEMP 'apkstudio-cloud-prod.zip'
 $tmpRepo=Join-Path $env:TEMP ('apkstudio-repo-'+[guid]::NewGuid())
+$preserve=Join-Path $env:TEMP ('apkstudio-preserve-'+[guid]::NewGuid())
+New-Item -ItemType Directory -Force -Path $preserve | Out-Null
+
+if(Test-Path (Join-Path $cloud '.tools')){
+  Move-Item -Force (Join-Path $cloud '.tools') (Join-Path $preserve '.tools')
+}
+if(Test-Path (Join-Path $cloud 'node_modules')){
+  Move-Item -Force (Join-Path $cloud 'node_modules') (Join-Path $preserve 'node_modules')
+}
+
 Download 'https://github.com/az0512124155azz-sys/apk-website-/archive/refs/heads/cloud-prod.zip' $repoZip
 Expand-Archive -Force $repoZip $tmpRepo
 $repoRoot=Get-ChildItem $tmpRepo -Directory | Select-Object -First 1
 if(Test-Path $cloud){Remove-Item -Recurse -Force $cloud}
 Copy-Item -Recurse -Force (Join-Path $repoRoot.FullName 'cloud') $installDir
+
+if(Test-Path (Join-Path $preserve '.tools')){
+  Move-Item -Force (Join-Path $preserve '.tools') (Join-Path $cloud '.tools')
+}
+if(Test-Path (Join-Path $preserve 'node_modules')){
+  Move-Item -Force (Join-Path $preserve 'node_modules') (Join-Path $cloud 'node_modules')
+}
+
+Remove-Item -Recurse -Force $preserve -ErrorAction SilentlyContinue
 Remove-Item -Recurse -Force $tmpRepo -ErrorAction SilentlyContinue
 Remove-Item -Force $repoZip -ErrorAction SilentlyContinue
 New-Item -ItemType Directory -Force -Path $tools | Out-Null
