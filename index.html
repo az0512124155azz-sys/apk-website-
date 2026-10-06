@@ -23,15 +23,28 @@ html,body{background:#0d1117;color:#e6edf3;margin:0}.hidden{display:none!importa
 .github-menu button:hover,.github-menu a:hover{background:#21262d}
 .github-menu .danger{color:#ff7b72}
 .github-connected-dot{width:7px;height:7px;border-radius:50%;background:#3fb950;display:inline-block}
-@media(max-width:680px){.github-login{display:none}.github-account-button{padding:0 7px}.github-menu{right:0}.mobile-upload{display:inline-flex}
+.mode-button{height:28px;border:1px solid #30363d;border-radius:6px;background:#161b22;color:#c9d1d9;padding:0 9px;font-size:11px;cursor:pointer}.mode-button:hover{background:#21262d}.mode-overlay{position:fixed;inset:0;background:#010409cc;display:grid;place-items:center;z-index:1000;padding:18px}.mode-dialog{width:min(560px,100%);background:#0d1117;border:1px solid #30363d;border-radius:10px;box-shadow:0 24px 70px #000a;padding:20px}.mode-dialog h2{margin:0 0 6px;font-size:20px}.mode-dialog>p{margin:0 0 18px;color:#8b949e;font-size:12px}.mode-options{display:grid;grid-template-columns:1fr 1fr;gap:10px}.mode-option{border:1px solid #30363d;border-radius:8px;background:#161b22;color:#e6edf3;text-align:left;padding:14px;cursor:pointer}.mode-option:hover{border-color:#58a6ff;background:#1b2430}.mode-option strong{display:block;font-size:14px;margin-bottom:5px}.mode-option span{display:block;color:#8b949e;font-size:11px;line-height:1.45}.mode-local-help{margin-top:12px;border-top:1px solid #21262d;padding-top:12px;color:#8b949e;font-size:11px}.mode-local-help a{color:#58a6ff}.mode-note{margin-top:12px;color:#6e7681;font-size:10px}@media(max-width:680px){.mode-options{grid-template-columns:1fr}.github-login{display:none}.github-account-button{padding:0 7px}.github-menu{right:0}.mobile-upload{display:inline-flex}
 .mobile-upload{display:inline-flex}.topbar .repo-crumb,.topbar .muted,.topbar .repo-current{display:none}.projects-head{align-items:flex-start}.status-banner{margin:8px 12px 0}.repo-titlebar,.repo-nav{padding-left:12px;padding-right:12px}.code-workspace{display:block;height:auto}.explorer{height:280px}.editor-area{height:520px}.button.quiet{display:none}}
 </style>
 </head>
 <body>
+<div id="processorModeOverlay" class="mode-overlay hidden">
+  <div class="mode-dialog">
+    <h2>Where should APK Studio run?</h2>
+    <p>Choose where APK decompilation and builds should use CPU and memory.</p>
+    <div class="mode-options">
+      <button class="mode-option" id="chooseCloud"><strong>☁ Cloud</strong><span>Runs on APK Studio servers. Works everywhere and requires no installation.</span></button>
+      <button class="mode-option" id="chooseLocal"><strong>▣ This computer</strong><span>Runs JADX, Apktool and Build on this PC. Faster for large APKs and can use your computer's RAM.</span></button>
+    </div>
+    <div id="localModeHelp" class="mode-local-help hidden">Local Agent is not responding. <a href="/install-local-agent.ps1" download>Install APK Studio Local Agent</a>, run it once, then choose This computer again.</div>
+    <div class="mode-note">You can change this later from the processor button in the top bar.</div>
+  </div>
+</div>
 <main id="projectsView" class="app-shell">
   <header class="topbar">
     <button class="brand" id="brandHome"><span style="font-size:20px">⬡</span><strong>APK Studio</strong></button>
     <span id="cloudState" class="cloud-state">checking processor…</span>
+    <button class="mode-button" id="modeButtonProjects">Cloud</button>
     <div class="topbar-spacer"></div>
     <button class="button" id="githubConnect">Connect GitHub</button>
     <div class="github-account hidden" id="githubAccountProjects">
@@ -77,6 +90,7 @@ html,body{background:#0d1117;color:#e6edf3;margin:0}.hidden{display:none!importa
     <span class="top-divider"></span>
     <button class="repo-crumb" id="backProjects2">Projects</button><span class="muted">›</span><strong class="repo-current" id="topRepoName"></strong>
     <div class="topbar-spacer"></div>
+    <button class="mode-button" id="modeButtonWorkspace">Cloud</button>
     <div class="github-account hidden" id="githubAccountWorkspace">
       <button class="github-account-button" id="githubAccountButtonWorkspace" title="GitHub account">
         <span class="github-connected-dot"></span>
@@ -148,7 +162,10 @@ html,body{background:#0d1117;color:#e6edf3;margin:0}.hidden{display:none!importa
 </main>
 
 <script>
-const API='/processor';
+const CLOUD_API='/processor';
+const LOCAL_API='http://127.0.0.1:32145';
+let processorMode=localStorage.getItem('apkstudio_processor_mode')||'';
+let API=processorMode==='local'?LOCAL_API:CLOUD_API;
 const $=id=>document.getElementById(id);
 let projects=[],current=null,root='editable',dir='',selected='',saved='',pollTimer=null,openedAt=0;
 let lastProgressDone=null,lastProgressChangedAt=0,recoveryRequested=false;
@@ -165,16 +182,55 @@ async function api(path,opts={}){
   const controller=new AbortController();
   const timeout=setTimeout(()=>controller.abort(),opts.timeout||30000);
   try{
-    const r=await fetch(API+path,{...opts,signal:controller.signal,cache:'no-store'});
+    const base=path.startsWith('/api/github/')?CLOUD_API:API;
+    const r=await fetch(base+path,{...opts,signal:controller.signal,cache:'no-store'});
     const text=await r.text();let data;try{data=JSON.parse(text)}catch{data={raw:text}}
     if(!r.ok)throw new Error(data.error||data.raw||('HTTP '+r.status));
     return data;
   }finally{clearTimeout(timeout)}
 }
 
+function isDesktopComputer(){
+  return !/Android|iPhone|iPad|iPod|Mobile/i.test(navigator.userAgent)&&window.innerWidth>=760;
+}
+function renderProcessorMode(){
+  const label=processorMode==='local'?'This computer':'Cloud';
+  $('modeButtonProjects').textContent=label;
+  $('modeButtonWorkspace').textContent=label;
+}
+async function setProcessorMode(mode,{close=true}={}){
+  processorMode=mode;
+  API=mode==='local'?LOCAL_API:CLOUD_API;
+  localStorage.setItem('apkstudio_processor_mode',mode);
+  renderProcessorMode();
+  const ok=await checkProcessor();
+  if(mode==='local'&&!ok){
+    $('localModeHelp').classList.remove('hidden');
+    $('processorModeOverlay').classList.remove('hidden');
+    return false;
+  }
+  $('localModeHelp').classList.add('hidden');
+  if(close)$('processorModeOverlay').classList.add('hidden');
+  projects=[];current=null;
+  $('workspaceView').classList.add('hidden');$('projectsView').classList.remove('hidden');
+  await loadProjects();
+  return true;
+}
+function showProcessorModeDialog(){
+  $('localModeHelp').classList.add('hidden');
+  $('processorModeOverlay').classList.remove('hidden');
+}
 async function checkProcessor(){
-  try{const h=await api('/health',{timeout:45000});$('cloudState').textContent='● processor online';$('cloudState').className='cloud-state ok'}
-  catch(e){$('cloudState').textContent='● processor unavailable';$('cloudState').className='cloud-state bad'}
+  try{
+    await api('/health',{timeout:processorMode==='local'?2500:45000});
+    $('cloudState').textContent=processorMode==='local'?'● local processor online':'● cloud processor online';
+    $('cloudState').className='cloud-state ok';
+    return true;
+  }catch(e){
+    $('cloudState').textContent=processorMode==='local'?'● local processor unavailable':'● cloud processor unavailable';
+    $('cloudState').className='cloud-state bad';
+    return false;
+  }
 }
 async function finishGithubHandoff(){
   const url=new URL(location.href);
@@ -274,7 +330,7 @@ async function connectGithub(){
     return;
   }
   const returnTo=location.origin+location.pathname;
-  location.href=API+'/api/github/oauth/start?returnTo='+encodeURIComponent(returnTo);
+  location.href=CLOUD_API+'/api/github/oauth/start?returnTo='+encodeURIComponent(returnTo);
 }
 async function importGithub(fullName){
   try{
@@ -398,6 +454,7 @@ async function saveFile(){if(!selected||root!=='editable')return;const q=new URL
 async function build(){if(!current)return;try{await api('/api/projects/'+current.id+'/build',{method:'POST',timeout:30000});current.buildStatus='building';switchSection('build');renderProject();clearInterval(pollTimer);pollTimer=setInterval(refreshCurrent,1500)}catch(e){alert(e.message)}}
 async function pushGithub(){
   if(!current)return;
+  if(processorMode==='local'){alert('This project is currently running on your computer. Direct GitHub workspace sync for Local mode is the next step; switch to Cloud to use server-side Push to GitHub for now.');return;}
   if(!githubSession.connected){await connectGithub();if(!githubSession.connected)return}
   const suggested=(current.originalName||'apk-studio-project').replace(/\.apk$/i,'').replace(/[^A-Za-z0-9._-]+/g,'-');
   const repoName=prompt('GitHub repository name:',current.githubRepo?current.githubRepo.split('/').pop():suggested);if(!repoName)return;
@@ -418,6 +475,10 @@ async function openVsCode(){
 }
 function switchSection(s){document.querySelectorAll('.repo-nav button').forEach(b=>b.classList.toggle('active',b.dataset.section===s));$('codeSection').classList.toggle('hidden',s!=='code');$('analysisSection').classList.toggle('hidden',s!=='analysis');$('buildSection').classList.toggle('hidden',s!=='build')}
 
+$('chooseCloud').onclick=()=>setProcessorMode('cloud');
+$('chooseLocal').onclick=()=>setProcessorMode('local');
+$('modeButtonProjects').onclick=showProcessorModeDialog;
+$('modeButtonWorkspace').onclick=showProcessorModeDialog;
 $('githubConnect').onclick=()=>connectGithub();
 $('githubAccountButtonProjects').onclick=e=>{e.stopPropagation();$('githubMenuWorkspace').classList.add('hidden');$('githubMenuProjects').classList.toggle('hidden')};
 $('githubAccountButtonWorkspace').onclick=e=>{e.stopPropagation();$('githubMenuProjects').classList.add('hidden');$('githubMenuWorkspace').classList.toggle('hidden')};
@@ -435,7 +496,17 @@ $('rootPicker').onclick=()=>$('rootMenu').classList.toggle('hidden');document.qu
 $('refreshTree').onclick=loadDir;$('saveFile').onclick=saveFile;$('editor').oninput=()=>{const dirty=$('editor').value!==saved;$('dirtyState').textContent=dirty?'● Unsaved':'';$('saveFile').disabled=!dirty||root!=='editable'};
 $('buildTop').onclick=build;$('buildPage').onclick=build;document.querySelectorAll('.repo-nav button').forEach(b=>b.onclick=()=>switchSection(b.dataset.section));
 window.addEventListener('keydown',e=>{if((e.ctrlKey||e.metaKey)&&e.key.toLowerCase()==='s'){e.preventDefault();saveFile()}});
-(async()=>{await checkProcessor();await finishGithubHandoff();await loadGithub();await loadProjects()})();
+(async()=>{
+  if(!isDesktopComputer()){processorMode='cloud';API=CLOUD_API;localStorage.setItem('apkstudio_processor_mode','cloud')}
+  renderProcessorMode();
+  if(isDesktopComputer()&&!processorMode){
+    processorMode='cloud';API=CLOUD_API;renderProcessorMode();showProcessorModeDialog();
+  }
+  await checkProcessor();
+  await finishGithubHandoff();
+  await loadGithub();
+  await loadProjects();
+})();
 </script>
 </body>
 </html>
