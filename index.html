@@ -40,6 +40,7 @@ html,body{background:#0d1117;color:#e6edf3;margin:0}.hidden{display:none!importa
     <span class="top-divider"></span>
     <button class="repo-crumb" id="backProjects2">Projects</button><span class="muted">›</span><strong class="repo-current" id="topRepoName"></strong>
     <div class="topbar-spacer"></div>
+    <a class="button quiet" id="vscodeLink" title="Download a VS Code workspace">▣ VS Code</a>
     <a class="button quiet" id="zipLink">↓ ZIP</a>
     <button class="button primary" id="buildTop">⚒ Build APK</button>
   </header>
@@ -158,7 +159,7 @@ async function openProject(id){
   clearInterval(pollTimer);current=await api('/api/projects/'+id,{timeout:45000});openedAt=Date.now();
   $('projectsView').classList.add('hidden');$('workspaceView').classList.remove('hidden');
   const name=(current.originalName||id).replace(/\.apk$/i,'');$('repoName').textContent=name;$('topRepoName').textContent=name;
-  $('zipLink').href=API+'/api/projects/'+id+'/download';renderProject();dir='';selected='';setRoot('editable');loadDir();
+  $('vscodeLink').href=API+'/api/projects/'+id+'/vscode';$('zipLink').href=API+'/api/projects/'+id+'/download';renderProject();dir='';selected='';setRoot('editable');loadDir();
   pollTimer=setInterval(refreshCurrent,1500);
 }
 function goHome(){clearInterval(pollTimer);current=null;$('workspaceView').classList.add('hidden');$('projectsView').classList.remove('hidden');loadProjects()}
@@ -177,7 +178,7 @@ function renderProject(){
   const b=$('statusBanner');b.className='status-banner';b.classList.remove('hidden');
   if(current.status==='error'){b.classList.add('error');$('statusTitle').textContent='Decompile failed';$('statusText').textContent=current.error||'Unknown error'}
   else if(!ready){const pr=progressFromLog(current.log||'');const sec=Math.floor((Date.now()-openedAt)/1000);$('statusTitle').textContent=current.stage==='jadx'?'Decompiling':'Preparing project';$('statusText').innerHTML='<span class="stage-detail">'+esc(current.stage||current.status)+(pr?' · '+pr.pct+'% ('+pr.done+'/'+pr.total+')':'')+' · '+sec+'s</span>'}
-  else if(current.jadxWarnings){b.classList.add('warning');$('statusTitle').textContent='Readable source has warnings';$('statusText').textContent='JADX completed with warnings; Smali and resources are available.'}
+  else if(current.jadxWarnings){b.classList.add('warning');$('statusTitle').textContent=current.readableAvailable===false?'Readable source unavailable':'Readable source has warnings';$('statusText').textContent=current.readableAvailable===false?'JADX could not finish within the server memory limit. Smali, Manifest and resources are ready in Rebuildable APK.':'JADX completed with warnings; Smali and resources are available.'}
   else b.classList.add('hidden');
 
   $('detailsTable').innerHTML=[
