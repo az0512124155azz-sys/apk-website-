@@ -15,15 +15,33 @@ export function safeJoin(base,rel=''){const full=path.resolve(base,String(rel).r
 export async function readMeta(id){return fs.readJson(path.join(projectDir(id),'project.json'));}
 export async function writeMeta(id,patch){const f=path.join(projectDir(id),'project.json');const prev=await fs.readJson(f).catch(()=>({}));const next={...prev,...patch,updatedAt:new Date().toISOString()};await fs.writeJson(f,next,{spaces:2});return next;}
 export async function log(id,msg){const s=new Date().toISOString().slice(11,19);const line=`[${s}] ${msg}`;console.log(`[JOB ${id}] ${line}`);await fs.appendFile(path.join(projectDir(id),'build.log'),line+'\n');}
-export async function run(id,cmd,args,accepted=[0]){
+export async function run(id,cmd,args,accepted=[0],options={}){
   await log(id,`$ ${cmd} ${args.map(x=>JSON.stringify(x)).join(' ')}`);
   return new Promise((resolve,reject)=>{
     const p=spawn(cmd,args,{shell:false});
-    let out='',err='';
-    p.stdout.on('data',async d=>{const s=d.toString();out+=s;await log(id,s.trimEnd());});
-    p.stderr.on('data',async d=>{const s=d.toString();err+=s;await log(id,s.trimEnd());});
-    p.on('error',reject);
-    p.on('close',code=>accepted.includes(code)?resolve({code,out,err}):reject(new Error(`${path.basename(cmd)} exited with ${code}\n${(err||out).slice(-12000)}`)));
+    let out='',err='',settled=false,idleTimer=null,totalTimer=null;
+    const finish=(fn,value)=>{if(settled)return;settled=true;if(idleTimer)clearTimeout(idleTimer);if(totalTimer)clearTimeout(totalTimer);fn(value)};
+    const armIdle=()=>{
+      if(!options.idleTimeoutMs)return;
+      if(idleTimer)clearTimeout(idleTimer);
+      idleTimer=setTimeout(()=>{
+        log(id,`WARNING: ${path.basename(cmd)} produced no output for ${Math.round(options.idleTimeoutMs/1000)}s; terminating.`).catch(()=>{});
+        try{p.kill('SIGKILL')}catch{}
+        finish(reject,new Error(`${path.basename(cmd)} idle timeout after ${options.idleTimeoutMs}ms`));
+      },options.idleTimeoutMs);
+    };
+    if(options.timeoutMs){
+      totalTimer=setTimeout(()=>{
+        log(id,`WARNING: ${path.basename(cmd)} exceeded ${Math.round(options.timeoutMs/1000)}s; terminating.`).catch(()=>{});
+        try{p.kill('SIGKILL')}catch{}
+        finish(reject,new Error(`${path.basename(cmd)} timeout after ${options.timeoutMs}ms`));
+      },options.timeoutMs);
+    }
+    armIdle();
+    p.stdout.on('data',async d=>{armIdle();const s=d.toString();out+=s;await log(id,s.trimEnd());});
+    p.stderr.on('data',async d=>{armIdle();const s=d.toString();err+=s;await log(id,s.trimEnd());});
+    p.on('error',e=>finish(reject,e));
+    p.on('close',code=>accepted.includes(code)?finish(resolve,{code,out,err}):finish(reject,new Error(`${path.basename(cmd)} exited with ${code}\n${(err||out).slice(-12000)}`)));
   });
 }
 export async function walk(dir,limit=50000){const out=[];const stack=[dir];while(stack.length&&out.length<limit){const cur=stack.pop();const es=await fs.readdir(cur,{withFileTypes:true}).catch(()=>[]);for(const e of es){const f=path.join(cur,e.name);if(e.isDirectory())stack.push(f);else out.push(f);if(out.length>=limit)break;}}return out;}
