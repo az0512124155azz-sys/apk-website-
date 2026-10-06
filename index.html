@@ -36,7 +36,11 @@ html,body{background:#0d1117;color:#e6edf3;margin:0}.hidden{display:none!importa
       <button class="mode-option" id="chooseCloud"><strong>☁ Cloud</strong><span>Runs on APK Studio servers. Works everywhere and requires no installation.</span></button>
       <button class="mode-option" id="chooseLocal"><strong>▣ This computer</strong><span>Runs JADX, Apktool and Build on this PC. Faster for large APKs and can use your computer's RAM.</span></button>
     </div>
-    <div id="localModeHelp" class="mode-local-help hidden">Local Agent is not responding. <a href="/install-local-agent.ps1" download>Install APK Studio Local Agent</a>, run it once, then choose This computer again.</div>
+    <div id="localModeHelp" class="mode-local-help hidden">
+      <strong id="localInstallTitle">Preparing automatic installation…</strong>
+      <span id="localInstallText">APK Studio will download the Local Agent installer and wait for it to start.</span>
+      <div style="margin-top:8px"><a id="localInstallerLink" href="/install-local-agent.cmd" download>Download installer again</a></div>
+    </div>
     <div class="mode-note">You can change this later from the processor button in the top bar.</div>
   </div>
 </div>
@@ -198,6 +202,45 @@ function renderProcessorMode(){
   $('modeButtonProjects').textContent=label;
   $('modeButtonWorkspace').textContent=label;
 }
+async function startAutomaticLocalInstall(){
+  $('localModeHelp').classList.remove('hidden');
+  $('localInstallTitle').textContent='Installing Local Agent…';
+  $('localInstallText').textContent='The installer has been downloaded. Open it once; APK Studio will detect the agent automatically and continue by itself.';
+  const a=document.createElement('a');
+  a.href='/install-local-agent.cmd';
+  a.download='APK-Studio-Local-Agent-Setup.cmd';
+  a.style.display='none';
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+
+  const started=Date.now();
+  while(Date.now()-started<180000){
+    await new Promise(r=>setTimeout(r,2000));
+    try{
+      const r=await fetch(LOCAL_API+'/health',{cache:'no-store'});
+      const d=await r.json().catch(()=>null);
+      if(r.ok&&d?.ok){
+        processorMode='local';
+        API=LOCAL_API;
+        localStorage.setItem('apkstudio_processor_mode','local');
+        renderProcessorMode();
+        $('localInstallTitle').textContent='Local Agent ready';
+        $('localInstallText').textContent='Switching APK Studio to this computer…';
+        await new Promise(r=>setTimeout(r,600));
+        $('processorModeOverlay').classList.add('hidden');
+        projects=[];current=null;
+        $('workspaceView').classList.add('hidden');$('projectsView').classList.remove('hidden');
+        await checkProcessor();
+        await loadProjects();
+        return true;
+      }
+    }catch{}
+  }
+  $('localInstallTitle').textContent='Local Agent was not detected';
+  $('localInstallText').textContent='Open the downloaded installer. APK Studio will switch automatically as soon as the agent starts.';
+  return false;
+}
 async function setProcessorMode(mode,{close=true}={}){
   processorMode=mode;
   API=mode==='local'?LOCAL_API:CLOUD_API;
@@ -205,9 +248,8 @@ async function setProcessorMode(mode,{close=true}={}){
   renderProcessorMode();
   const ok=await checkProcessor();
   if(mode==='local'&&!ok){
-    $('localModeHelp').classList.remove('hidden');
     $('processorModeOverlay').classList.remove('hidden');
-    return false;
+    return await startAutomaticLocalInstall();
   }
   $('localModeHelp').classList.add('hidden');
   if(close)$('processorModeOverlay').classList.add('hidden');
