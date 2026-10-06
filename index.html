@@ -143,7 +143,7 @@ html,body{background:#0d1117;color:#e6edf3;margin:0}.hidden{display:none!importa
     <div class="page-heading build-heading"><div><h2>Build</h2><p>Rebuild the editable APK.</p></div><button class="button primary" id="buildPage">⚒ Build APK</button></div>
     <div class="build-table" id="buildTable"></div>
     <a class="artifact-row hidden" id="apkArtifact">↓ <div><strong>app-rebuilt-unsigned.apk</strong><span>Download rebuilt APK</span></div></a>
-    <section class="log-section"><div class="log-head"><strong>Build log</strong><span>live output</span></div><pre id="buildLog">No output yet.</pre></section>
+    <section class="log-section"><div class="log-head"><strong id="logTitle">Processing log</strong><span id="logSubtitle">live output</span></div><pre id="buildLog">Waiting for processor output…</pre></section>
   </section>
 </main>
 
@@ -322,7 +322,16 @@ function goHome(){clearInterval(pollTimer);current=null;$('workspaceView').class
 async function refreshCurrent(){
   if(!current)return;
   try{current=await api('/api/projects/'+current.id,{timeout:20000});renderProject();if(current.status==='ready'||current.status==='error'){clearInterval(pollTimer);loadDir()}}
-  catch(e){$('statusBanner').className='status-banner error';$('statusBanner').classList.remove('hidden');$('statusTitle').textContent='Processor connection lost';$('statusText').textContent=e.message}
+  catch(e){
+    $('statusBanner').className='status-banner error';$('statusBanner').classList.remove('hidden');
+    if(String(e.message||'').includes('expired')||String(e.message||'').includes('no GitHub backup')){
+      $('statusTitle').textContent='Workspace expired';
+      $('statusText').textContent=e.message;
+    }else{
+      $('statusTitle').textContent='Processor connection lost';
+      $('statusText').textContent=e.message;
+    }
+  }
 }
 function progressFromLog(log=''){
   let last=null;const re=/progress:\s*(\d+)\s+of\s+(\d+).*?\((\d+)%\)/g;let m;while((m=re.exec(log)))last={done:+m[1],total:+m[2],pct:+m[3]};
@@ -342,7 +351,18 @@ function renderProject(){
     ['JADX exit code',current.jadxExitCode??'—'],['Decoded files',current.editableFileCount??'—']
   ].map(x=>'<div><span>'+esc(x[0])+'</span><strong>'+esc(x[1])+'</strong></div>').join('');
   $('buildTable').innerHTML='<div><span>APK rebuild</span><span class="project-status '+esc(current.buildStatus||'idle')+'">● '+esc(current.buildStatus||'idle')+'</span><code>'+esc(current.buildError||'')+'</code></div>';
-  const buildMarker='=== BUILD START ===';const buildPart=(current.log||'').includes(buildMarker)?(current.log||'').split(buildMarker).pop().trim():'';$('buildLog').textContent=buildPart||'No build started yet.';
+  const buildMarker='=== BUILD START ===';
+  const fullLog=current.log||'';
+  const hasBuild=fullLog.includes(buildMarker);
+  if(hasBuild){
+    $('logTitle').textContent='Build log';
+    $('logSubtitle').textContent='live output';
+    $('buildLog').textContent=fullLog.split(buildMarker).pop().trim()||'Build started…';
+  }else{
+    $('logTitle').textContent=ready?'Processing log':'Decompile log';
+    $('logSubtitle').textContent=ready?'completed output':'live output';
+    $('buildLog').textContent=fullLog||'Waiting for processor output…';
+  }
   if(current.buildArtifact){$('apkArtifact').classList.remove('hidden');$('apkArtifact').href=API+'/api/projects/'+current.id+'/apk'}else $('apkArtifact').classList.add('hidden');
 }
 function setRoot(r){root=r;dir='';selected='';$('rootTitle').textContent=rootMeta[r].title;$('rootHint').textContent=rootMeta[r].hint;$('rootCrumb').textContent=rootMeta[r].title;$('statusRoot').textContent=rootMeta[r].title;document.querySelectorAll('#rootMenu button').forEach(b=>b.classList.toggle('selected',b.dataset.root===r));$('rootMenu').classList.add('hidden');$('editor').classList.add('hidden');$('editorEmpty').classList.remove('hidden');$('saveFile').disabled=true;loadDir()}
