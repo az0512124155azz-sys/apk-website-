@@ -43,12 +43,12 @@ export async function decompile(id,{forceJadxOom=false,skipPerDex=false}={}){
       try{
         await log(id,'INFO: Trying memory-safe per-DEX JADX fallback...');
         const zip=new AdmZip(apk);
-        const dexEntries=zip.getEntries().filter(en=>/^classes(\\d*)?\\.dex$/i.test(en.entryName));
+        const dexEntries=zip.getEntries().filter(en=>/^classes(\d*)?\.dex$/i.test(en.entryName));
         const dexDir=path.join(dir,'dex-fallback');
         await fs.ensureDir(dexDir);
         let success=0;
         for(const en of dexEntries){
-          const base=en.entryName.replace(/\\.dex$/i,'');
+          const base=en.entryName.replace(/\.dex$/i,'');
           const dexFile=path.join(dexDir,en.entryName);
           await fs.writeFile(dexFile,en.getData());
           const out=path.join(readable,base);
