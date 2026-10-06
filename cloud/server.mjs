@@ -6,6 +6,7 @@ import path from 'node:path';
 import os from 'node:os';
 import crypto from 'node:crypto';
 import archiver from 'archiver';
+import { spawn } from 'node:child_process';
 import {ROOT,init,projectDir,safeJoin,readMeta,writeMeta,listDir} from './lib.mjs';
 import {decompile,rebuild} from './tasks.mjs';
 
@@ -13,6 +14,10 @@ await init();
 const app=express();
 const port=Number(process.env.PORT||10000);
 const maxMb=Number(process.env.MAX_APK_MB||150);
+const sessionSecret=process.env.SESSION_SECRET||'apk-studio-dev-secret-change-me';
+const githubClientId=process.env.GITHUB_CLIENT_ID||'';
+const githubClientSecret=process.env.GITHUB_CLIENT_SECRET||'';
+const publicOrigin=process.env.PUBLIC_ORIGIN||'https://apk-website-sable.vercel.app';
 app.use(cors({origin:true}));
 app.use((req,_res,next)=>{ console.log(new Date().toISOString(), req.method, req.url); next(); });
 app.use(express.json({limit:'10mb'}));
@@ -25,6 +30,91 @@ const upload=multer({
     cb(ok?null:new Error('Only APK files are accepted'),ok);
   }
 });
+
+const sessionKey=crypto.createHash('sha256').update(sessionSecret).digest();
+function parseCookies(req){
+  const out={};
+  for(const part of String(req.headers.cookie||'').split(';')){
+    const i=part.indexOf('='); if(i<0) continue;
+    out[part.slice(0,i).trim()]=decodeURIComponent(part.slice(i+1).trim());
+  }
+  return out;
+}
+function seal(value){
+  const iv=crypto.randomBytes(12);
+  const cipher=crypto.createCipheriv('aes-256-gcm',sessionKey,iv);
+  const enc=Buffer.concat([cipher.update(String(value),'utf8'),cipher.final()]);
+  const tag=cipher.getAuthTag();
+  return Buffer.concat([iv,tag,enc]).toString('base64url');
+}
+function unseal(value){
+  if(!value) return null;
+  try{
+    const b=Buffer.from(value,'base64url'),iv=b.subarray(0,12),tag=b.subarray(12,28),enc=b.subarray(28);
+    const decipher=crypto.createDecipheriv('aes-256-gcm',sessionKey,iv); decipher.setAuthTag(tag);
+    return Buffer.concat([decipher.update(enc),decipher.final()]).toString('utf8');
+  }catch{return null;}
+}
+function setGithubCookie(res,token){
+  const secure='Secure; ';
+  res.setHeader('Set-Cookie',`apkstudio_gh=${encodeURIComponent(seal(token))}; Path=/; HttpOnly; ${secure}SameSite=Lax; Max-Age=2592000`);
+}
+function clearGithubCookie(res){
+  res.setHeader('Set-Cookie','apkstudio_gh=; Path=/; HttpOnly; Secure; SameSite=Lax; Max-Age=0');
+}
+function githubToken(req){return unseal(parseCookies(req).apkstudio_gh);}
+async function gh(token,url,{method='GET',body}={}){
+  const r=await fetch(url.startsWith('http')?url:'https://api.github.com'+url,{
+    method,
+    headers:{
+      'Authorization':'Bearer '+token,
+      'Accept':'application/vnd.github+json',
+      'X-GitHub-Api-Version':'2022-11-28',
+      ...(body?{'Content-Type':'application/json'}:{})
+    },
+    body:body?JSON.stringify(body):undefined
+  });
+  const text=await r.text(); let data=null; try{data=text?JSON.parse(text):null}catch{data=text}
+  if(!r.ok){const e=new Error(data?.message||('GitHub HTTP '+r.status));e.status=r.status;throw e}
+  return data;
+}
+async function requireGithub(req){
+  const token=githubToken(req); if(!token){const e=new Error('GitHub is not connected');e.status=401;throw e}
+  return token;
+}
+function cleanRepoName(name){
+  return String(name||'apk-studio-project').replace(/\.apk$/i,'').replace(/[^A-Za-z0-9._-]+/g,'-').replace(/^-+|-+$/g,'').slice(0,80)||'apk-studio-project';
+}
+async function gitRun(cwd,args,token){
+  return new Promise((resolve,reject)=>{
+    const basic=Buffer.from('x-access-token:'+token).toString('base64');
+    const env={...process.env,GIT_TERMINAL_PROMPT:'0',GIT_CONFIG_COUNT:'1',GIT_CONFIG_KEY_0:'http.https://github.com/.extraheader',GIT_CONFIG_VALUE_0:'AUTHORIZATION: basic '+basic};
+    const p=spawn('git',args,{cwd,env,shell:false});
+    let out='',err=''; p.stdout.on('data',d=>out+=d);p.stderr.on('data',d=>err+=d);
+    p.on('error',reject);p.on('close',code=>code===0?resolve({out,err}):reject(new Error('git '+args[0]+' failed: '+(err||out).slice(-4000))));
+  });
+}
+function vscodeToken(id,expires){
+  return crypto.createHmac('sha256',sessionSecret).update(id+'.'+expires).digest('base64url');
+}
+function validVscodeToken(id,expires,token){
+  if(!expires||Number(expires)<Date.now()) return false;
+  const expected=vscodeToken(id,expires);
+  const a=Buffer.from(expected),b=Buffer.from(String(token||''));
+  return a.length===b.length&&crypto.timingSafeEqual(a,b);
+}
+async function streamVsCodeZip(id,res,next){
+  try{
+    const dir=projectDir(id),editable=path.join(dir,'editable'),readable=path.join(dir,'readable');
+    if(!await fs.pathExists(editable)) return res.status(409).json({error:'Project is not ready yet'});
+    const workspace={folders:[{name:'Rebuildable APK',path:'rebuildable'},...((await fs.pathExists(readable))?[{name:'Readable Source',path:'readable'}]:[])],settings:{'files.exclude':{'**/.DS_Store':true},'editor.tabSize':2}};
+    res.attachment('apk-studio-vscode.zip');
+    const a=archiver('zip',{zlib:{level:6}});a.on('error',next);a.pipe(res);
+    a.directory(editable,'rebuildable');if(await fs.pathExists(readable))a.directory(readable,'readable');
+    a.append(JSON.stringify(workspace,null,2),{name:'apk-studio.code-workspace'});
+    await a.finalize();
+  }catch(e){next(e);}
+}
 
 app.get('/',(_req,res)=>res.json({name:'APK Studio Cloud API',ok:true,version:'1.0.0'}));
 app.get('/health',async(_req,res)=>{
@@ -118,34 +208,105 @@ app.get('/api/projects/:id/download',async(req,res,next)=>{
   }catch(e){next(e);}
 });
 
-app.get('/api/projects/:id/vscode',async(req,res,next)=>{
+app.get('/api/projects/:id/vscode',async(req,res,next)=>streamVsCodeZip(req.params.id,res,next));
+
+app.get('/api/projects/:id/vscode-link',async(req,res,next)=>{
   try{
-    const id=req.params.id;
-    const dir=projectDir(id);
-    const editable=path.join(dir,'editable');
-    const readable=path.join(dir,'readable');
-    if(!await fs.pathExists(editable)) return res.status(409).json({error:'Project is not ready yet'});
+    const meta=await readMeta(req.params.id);
+    const expires=Date.now()+5*60*1000;
+    const token=vscodeToken(req.params.id,expires);
+    const download=`${publicOrigin}/processor/api/projects/${req.params.id}/vscode-download?expires=${expires}&token=${encodeURIComponent(token)}`;
+    const name=cleanRepoName(meta.originalName||req.params.id);
+    res.json({url:`apkstudio://open?download=${encodeURIComponent(download)}&name=${encodeURIComponent(name)}`,expires});
+  }catch(e){next(e);}
+});
 
-    const workspace={
-      folders:[
-        {name:'Rebuildable APK',path:'rebuildable'},
-        ...((await fs.pathExists(readable)) ? [{name:'Readable Source',path:'readable'}] : [])
-      ],
-      settings:{
-        'files.exclude':{'**/.DS_Store':true},
-        'editor.tabSize':2
-      }
-    };
+app.get('/api/projects/:id/vscode-download',async(req,res,next)=>{
+  if(!validVscodeToken(req.params.id,req.query.expires,req.query.token)) return res.status(403).json({error:'VS Code link expired or invalid'});
+  return streamVsCodeZip(req.params.id,res,next);
+});
 
-    res.attachment('apk-studio-vscode.zip');
-    const a=archiver('zip',{zlib:{level:6}});
-    a.on('error',next);
-    a.pipe(res);
-    a.directory(editable,'rebuildable');
-    if(await fs.pathExists(readable)) a.directory(readable,'readable');
-    a.append(JSON.stringify(workspace,null,2),{name:'apk-studio.code-workspace'});
-    a.append('Extract this ZIP, then open apk-studio.code-workspace in Visual Studio Code.\n',{name:'OPEN-IN-VSCODE.txt'});
-    await a.finalize();
+app.get('/api/github/config',(_req,res)=>res.json({oauth:!!(githubClientId&&githubClientSecret)}));
+
+app.get('/api/github/oauth/start',(req,res)=>{
+  if(!githubClientId||!githubClientSecret) return res.status(501).json({error:'GitHub OAuth is not configured on the server'});
+  const state=seal(JSON.stringify({createdAt:Date.now(),returnTo:String(req.query.returnTo||publicOrigin)}));
+  res.cookie?.('noop','');
+  res.redirect('https://github.com/login/oauth/authorize?client_id='+encodeURIComponent(githubClientId)+'&scope=repo%20read:user&state='+encodeURIComponent(state));
+});
+
+app.get('/api/github/oauth/callback',async(req,res,next)=>{
+  try{
+    if(!githubClientId||!githubClientSecret) throw new Error('GitHub OAuth is not configured');
+    const code=String(req.query.code||''); if(!code) throw new Error('Missing GitHub OAuth code');
+    const r=await fetch('https://github.com/login/oauth/access_token',{method:'POST',headers:{'Accept':'application/json','Content-Type':'application/json'},body:JSON.stringify({client_id:githubClientId,client_secret:githubClientSecret,code})});
+    const d=await r.json(); if(!d.access_token) throw new Error(d.error_description||d.error||'GitHub OAuth failed');
+    setGithubCookie(res,d.access_token);res.redirect(publicOrigin+'/?github=connected');
+  }catch(e){next(e);}
+});
+
+app.post('/api/github/connect',async(req,res,next)=>{
+  try{
+    const token=String(req.body.token||'').trim(); if(!token) throw new Error('GitHub token is required');
+    const user=await gh(token,'/user'); setGithubCookie(res,token);
+    res.json({connected:true,user:{login:user.login,name:user.name,avatar_url:user.avatar_url}});
+  }catch(e){next(e);}
+});
+app.post('/api/github/disconnect',(_req,res)=>{clearGithubCookie(res);res.json({connected:false})});
+app.get('/api/github/me',async(req,res,next)=>{
+  try{const token=githubToken(req);if(!token)return res.json({connected:false});const user=await gh(token,'/user');res.json({connected:true,user:{login:user.login,name:user.name,avatar_url:user.avatar_url}})}catch(e){clearGithubCookie(res);res.json({connected:false})}
+});
+app.get('/api/github/projects',async(req,res,next)=>{
+  try{
+    const token=await requireGithub(req);const repos=await gh(token,'/user/repos?per_page=100&sort=updated&affiliation=owner,collaborator');
+    const projects=repos.filter(r=>Array.isArray(r.topics)&&r.topics.includes('apk-studio-project')).map(r=>({full_name:r.full_name,name:r.name,private:r.private,html_url:r.html_url,clone_url:r.clone_url,updated_at:r.updated_at,description:r.description}));
+    res.json({projects});
+  }catch(e){next(e);}
+});
+app.post('/api/projects/:id/github/push',async(req,res,next)=>{
+  try{
+    const token=await requireGithub(req);const user=await gh(token,'/user');const meta=await readMeta(req.params.id);
+    const repoName=cleanRepoName(req.body.repoName||meta.originalName||req.params.id);const privateRepo=req.body.private!==false;
+    let repoInfo;try{repoInfo=await gh(token,`/repos/${user.login}/${repoName}`)}catch(e){if(e.status!==404)throw e;repoInfo=await gh(token,'/user/repos',{method:'POST',body:{name:repoName,private:privateRepo,description:'APK Studio project'}})}
+    await gh(token,`/repos/${user.login}/${repoName}/topics`,{method:'PUT',body:{names:['apk-studio-project']}}).catch(()=>{});
+
+    const dir=projectDir(req.params.id),work=path.join(dir,'github-work');
+    await fs.remove(work);await fs.ensureDir(work);
+    let cloned=false;
+    try{await gitRun(dir,['clone','--depth','1',repoInfo.clone_url,work],token);cloned=true}catch{}
+    if(cloned){
+      for(const entry of await fs.readdir(work)){if(entry!=='.git')await fs.remove(path.join(work,entry))}
+    }
+    const editable=path.join(dir,'editable'),readable=path.join(dir,'readable');
+    if(await fs.pathExists(editable))await fs.copy(editable,path.join(work,'rebuildable'));
+    if(await fs.pathExists(readable))await fs.copy(readable,path.join(work,'readable'));
+    const original=path.join(dir,'original.apk');if(await fs.pathExists(original)){const st=await fs.stat(original);if(st.size<95*1024*1024)await fs.copy(original,path.join(work,'original.apk'))}
+    const manifest={format:1,projectId:req.params.id,originalName:meta.originalName,size:meta.size,readableAvailable:meta.readableAvailable,readableMode:meta.readableMode,updatedAt:new Date().toISOString()};
+    await fs.writeJson(path.join(work,'apk-studio.json'),manifest,{spaces:2});
+    await fs.writeJson(path.join(work,'apk-studio.code-workspace'),{folders:[{name:'Rebuildable APK',path:'rebuildable'},...((await fs.pathExists(path.join(work,'readable')))?[{name:'Readable Source',path:'readable'}]:[])]},{spaces:2});
+    if(!cloned)await gitRun(work,['init'],token);
+    await gitRun(work,['config','user.name','APK Studio'],token);await gitRun(work,['config','user.email','apk-studio@users.noreply.github.com'],token);
+    await gitRun(work,['add','-A'],token);
+    try{await gitRun(work,['commit','-m',String(req.body.message||'Sync APK Studio project')],token)}catch(e){if(!String(e.message).includes('nothing to commit'))throw e}
+    await gitRun(work,['branch','-M','main'],token);
+    if(!cloned)await gitRun(work,['remote','add','origin',repoInfo.clone_url],token);
+    await gitRun(work,['push','-u','origin','main'],token);
+    const next=await writeMeta(req.params.id,{githubRepo:repoInfo.full_name,githubUrl:repoInfo.html_url,githubCloneUrl:repoInfo.clone_url,githubSyncedAt:new Date().toISOString()});
+    res.json({ok:true,repo:{full_name:repoInfo.full_name,html_url:repoInfo.html_url,clone_url:repoInfo.clone_url},project:next});
+  }catch(e){next(e);}
+});
+app.post('/api/github/import',async(req,res,next)=>{
+  try{
+    const token=await requireGithub(req),fullName=String(req.body.fullName||'');if(!/^[^/]+\/[^/]+$/.test(fullName))throw new Error('Invalid repository name');
+    const repoInfo=await gh(token,'/repos/'+fullName);const id=crypto.randomUUID(),dir=projectDir(id),clone=path.join(dir,'repo');
+    await fs.ensureDir(dir);await gitRun(dir,['clone','--depth','1',repoInfo.clone_url,clone],token);
+    const manifest=await fs.readJson(path.join(clone,'apk-studio.json')).catch(()=>({}));
+    if(await fs.pathExists(path.join(clone,'rebuildable')))await fs.copy(path.join(clone,'rebuildable'),path.join(dir,'editable'));
+    if(await fs.pathExists(path.join(clone,'readable')))await fs.copy(path.join(clone,'readable'),path.join(dir,'readable'));
+    if(await fs.pathExists(path.join(clone,'original.apk')))await fs.copy(path.join(clone,'original.apk'),path.join(dir,'original.apk'));
+    const meta={id,originalName:manifest.originalName||repoInfo.name+'.apk',size:manifest.size||0,status:'ready',stage:'ready',readableAvailable:manifest.readableAvailable!==false,readableMode:manifest.readableMode||'github',githubRepo:repoInfo.full_name,githubUrl:repoInfo.html_url,githubCloneUrl:repoInfo.clone_url,createdAt:new Date().toISOString(),updatedAt:new Date().toISOString()};
+    await fs.writeJson(path.join(dir,'project.json'),meta,{spaces:2});await fs.writeFile(path.join(dir,'build.log'),'');
+    res.status(201).json(meta);
   }catch(e){next(e);}
 });
 
