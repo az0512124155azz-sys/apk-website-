@@ -14,7 +14,7 @@ export function projectDir(id){if(!/^[a-f0-9-]{20,}$/i.test(id))throw new Error(
 export function safeJoin(base,rel=''){const full=path.resolve(base,String(rel).replaceAll('\\','/').replace(/^\/+/,''));const root=path.resolve(base);if(full!==root&&!full.startsWith(root+path.sep))throw new Error('Unsafe path');return full;}
 export async function readMeta(id){return fs.readJson(path.join(projectDir(id),'project.json'));}
 export async function writeMeta(id,patch){const f=path.join(projectDir(id),'project.json');const prev=await fs.readJson(f).catch(()=>({}));const next={...prev,...patch,updatedAt:new Date().toISOString()};await fs.writeJson(f,next,{spaces:2});return next;}
-export async function log(id,msg){const s=new Date().toISOString().slice(11,19);await fs.appendFile(path.join(projectDir(id),'build.log'),`[${s}] ${msg}\n`);}
+export async function log(id,msg){const s=new Date().toISOString().slice(11,19);const line=`[${s}] ${msg}`;console.log(`[JOB ${id}] ${line}`);await fs.appendFile(path.join(projectDir(id),'build.log'),line+'\n');}
 export async function run(id,cmd,args,accepted=[0]){
   await log(id,`$ ${cmd} ${args.map(x=>JSON.stringify(x)).join(' ')}`);
   return new Promise((resolve,reject)=>{
