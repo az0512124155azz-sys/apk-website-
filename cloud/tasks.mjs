@@ -119,6 +119,7 @@ export async function rebuild(id){
   const dir=projectDir(id),editable=path.join(dir,'editable'),output=path.join(dir,'output');
   await fs.ensureDir(output);
   await writeMeta(id,{buildStatus:'building',buildError:null});
+  await log(id,'=== BUILD START ===');
   try{
     const artifact=path.join(output,'app-rebuilt-unsigned.apk');
     await run(id,java,[
