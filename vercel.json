@@ -1,0 +1,8 @@
+{
+  "rewrites": [
+    {
+      "source": "/processor/:path*",
+      "destination": "https://apk-studio-cloud-api-v2.onrender.com/:path*"
+    }
+  ]
+}
