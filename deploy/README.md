@@ -1,0 +1,1 @@
+Deployment staging files for APK Studio. The application source is uploaded from the tested v0.8 package and built as a single web service.
