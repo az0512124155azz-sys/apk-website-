@@ -5,7 +5,7 @@ import {java,jadxJar,apktoolJar,projectDir,writeMeta,run,walk,log} from './lib.m
 
 const shortError = (e) => String(e?.message || e || 'Unknown error').slice(-12000);
 
-export async function decompile(id,{forceJadxOom=false}={}){
+export async function decompile(id,{forceJadxOom=false,skipPerDex=false}={}){
   const dir=projectDir(id),apk=path.join(dir,'original.apk'),readable=path.join(dir,'readable'),editable=path.join(dir,'editable');
   await fs.ensureDir(readable);
   await fs.ensureDir(editable);
@@ -39,7 +39,7 @@ export async function decompile(id,{forceJadxOom=false}={}){
     await fs.remove(readable).catch(()=>{});
     await fs.ensureDir(readable);
 
-    if(!forceJadxOom){
+    if(!skipPerDex){
       try{
         await log(id,'INFO: Trying memory-safe per-DEX JADX fallback...');
         const zip=new AdmZip(apk);
