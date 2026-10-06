@@ -161,10 +161,10 @@ app.get('/api/selftest/start',async(req,res,next)=>{
     void (async()=>{
       const update=async patch=>{
         const prev=await fs.readJson(selftestFile).catch(()=>({id,checks:{}}));
-        await fs.writeJson(selftestFile,{...prev,...patch,checks:{...(prev.checks||{}),...(patch.checks||{})}},{spaces:2});
+        const next={...prev,...patch,checks:{...(prev.checks||{}),...(patch.checks||{})}};await fs.writeJson(selftestFile,next,{spaces:2});console.log('[SELFTEST] STATE',JSON.stringify(next));
       };
       try{
-        const sample='https://raw.githubusercontent.com/sentry-demos/android/main/app-debug.apk';
+        const sample='https://raw.githubusercontent.com/wuyr/HexagramDecoder/master/app-debug.apk';
         await update({status:'downloading'});
         const response=await fetch(sample);
         if(!response.ok) throw new Error('Sample APK download failed: HTTP '+response.status);
