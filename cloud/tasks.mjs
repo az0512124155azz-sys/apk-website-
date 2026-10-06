@@ -1,5 +1,6 @@
 import fs from 'fs-extra';
 import path from 'node:path';
+import AdmZip from 'adm-zip';
 import {java,jadxJar,apktoolJar,projectDir,writeMeta,run,walk,log} from './lib.mjs';
 
 const shortError = (e) => String(e?.message || e || 'Unknown error').slice(-12000);
@@ -12,6 +13,8 @@ export async function decompile(id,{forceJadxOom=false}={}){
 
   let jadxWarnings=false;
   let readableAvailable=true;
+  let readableMode='full';
+  let readableDexCount=0;
   let jadxExitCode=null;
   let jadxError=null;
 
@@ -29,15 +32,61 @@ export async function decompile(id,{forceJadxOom=false}={}){
   }catch(e){
     jadxWarnings=true;
     readableAvailable=false;
+    readableMode='unavailable';
     jadxError=shortError(e);
-    await log(id,'WARNING: Readable source generation failed; continuing with Apktool/Smali.');
+    await log(id,'WARNING: Full APK readable source generation failed.');
     await log(id,'JADX ERROR: '+jadxError);
     await fs.remove(readable).catch(()=>{});
     await fs.ensureDir(readable);
+
+    if(!forceJadxOom){
+      try{
+        await log(id,'INFO: Trying memory-safe per-DEX JADX fallback...');
+        const zip=new AdmZip(apk);
+        const dexEntries=zip.getEntries().filter(en=>/^classes(\\d*)?\\.dex$/i.test(en.entryName));
+        const dexDir=path.join(dir,'dex-fallback');
+        await fs.ensureDir(dexDir);
+        let success=0;
+        for(const en of dexEntries){
+          const base=en.entryName.replace(/\\.dex$/i,'');
+          const dexFile=path.join(dexDir,en.entryName);
+          await fs.writeFile(dexFile,en.getData());
+          const out=path.join(readable,base);
+          await fs.ensureDir(out);
+          try{
+            await log(id,`INFO: JADX fallback ${en.entryName}...`);
+            const r=await run(id,java,[
+              '-Xms48m','-Xmx320m','-XX:+UseSerialGC',
+              '-cp',jadxJar,'jadx.cli.JadxCLI',
+              '--show-bad-code','-j','1',
+              '-d',out,dexFile
+            ],[0,3]);
+            success++;
+            if(r.code===3) jadxWarnings=true;
+          }catch(inner){
+            await log(id,`WARNING: ${en.entryName} readable fallback failed: ${shortError(inner)}`);
+          }
+        }
+        readableDexCount=success;
+        if(success>0){
+          readableAvailable=true;
+          readableMode=success===dexEntries.length?'per-dex':'per-dex-partial';
+          await log(id,`INFO: Readable fallback recovered ${success}/${dexEntries.length} DEX files.`);
+        }else{
+          await log(id,'WARNING: Per-DEX readable fallback could not recover source.');
+        }
+      }catch(fallbackError){
+        await log(id,'WARNING: Per-DEX fallback setup failed: '+shortError(fallbackError));
+      }
+    }
+
+    if(!readableAvailable){
+      await log(id,'WARNING: Continuing with Apktool/Smali only.');
+    }
   }
 
   await writeMeta(id,{
-    stage:'apktool',jadxExitCode,jadxWarnings,readableAvailable,jadxError
+    stage:'apktool',jadxExitCode,jadxWarnings,readableAvailable,readableMode,readableDexCount,jadxError
   });
 
   try{
@@ -54,7 +103,9 @@ export async function decompile(id,{forceJadxOom=false}={}){
       jadxWarnings,
       readableAvailable,
       warning: readableAvailable
-        ? (jadxWarnings ? 'Readable source contains JADX warnings.' : null)
+        ? (readableMode==='full'
+            ? (jadxWarnings ? 'Readable source contains JADX warnings.' : null)
+            : `Readable source recovered with memory-safe per-DEX fallback (${readableDexCount} DEX files).`)
         : 'Readable source unavailable; Smali/resources are fully available in Rebuildable APK.'
     });
   }catch(e){
