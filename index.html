@@ -169,14 +169,18 @@ async function loadGithubProjects(){
 }
 async function connectGithub(){
   if(githubSession.connected){
-    await api('/api/github/disconnect',{method:'POST'});githubSession={connected:false,user:null};await loadGithub();return;
+    await api('/api/github/disconnect',{method:'POST'});
+    githubSession={connected:false,user:null};
+    await loadGithub();
+    return;
   }
   const cfg=await api('/api/github/config');
-  if(cfg.oauth){location.href=API+'/api/github/oauth/start?returnTo='+encodeURIComponent(location.href);return}
-  const token=prompt('Paste a GitHub fine-grained token with repository access. This is stored only in an encrypted HttpOnly session cookie.');
-  if(!token)return;
-  await api('/api/github/connect',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({token})});
-  await loadGithub();
+  if(!cfg.oauth){
+    alert('GitHub sign-in is not configured yet. APK Studio requires a real GitHub OAuth connection; token login is disabled.');
+    return;
+  }
+  const returnTo=location.origin+location.pathname;
+  location.href=API+'/api/github/oauth/start?returnTo='+encodeURIComponent(returnTo);
 }
 async function importGithub(fullName){
   try{
