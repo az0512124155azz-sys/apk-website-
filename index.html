@@ -151,6 +151,7 @@ html,body{background:#0d1117;color:#e6edf3;margin:0}.hidden{display:none!importa
 const API='/processor';
 const $=id=>document.getElementById(id);
 let projects=[],current=null,root='editable',dir='',selected='',saved='',pollTimer=null,openedAt=0;
+let lastProgressDone=null,lastProgressChangedAt=0,recoveryRequested=false;
 let githubSession={connected:false,user:null},githubProjects=[];
 
 const rootMeta={
@@ -312,7 +313,7 @@ function upload(file){
 async function deleteProject(id){if(!confirm('Delete this project?'))return;try{await api('/api/projects/'+id,{method:'DELETE'});await loadProjects()}catch(e){alert(e.message)}}
 
 async function openProject(id){
-  clearInterval(pollTimer);current=await api('/api/projects/'+id,{timeout:45000});openedAt=Date.now();
+  clearInterval(pollTimer);current=await api('/api/projects/'+id,{timeout:45000});openedAt=Date.now();lastProgressDone=null;lastProgressChangedAt=Date.now();recoveryRequested=false;
   $('projectsView').classList.add('hidden');$('workspaceView').classList.remove('hidden');
   const name=(current.originalName||id).replace(/\.apk$/i,'');$('repoName').textContent=name;$('topRepoName').textContent=name;
   $('zipLink').href=API+'/api/projects/'+id+'/download';renderProject();dir='';selected='';setRoot('editable');loadDir();
@@ -321,7 +322,20 @@ async function openProject(id){
 function goHome(){clearInterval(pollTimer);current=null;$('workspaceView').classList.add('hidden');$('projectsView').classList.remove('hidden');loadProjects()}
 async function refreshCurrent(){
   if(!current)return;
-  try{current=await api('/api/projects/'+current.id,{timeout:20000});renderProject();if(current.status==='ready'||current.status==='error'){clearInterval(pollTimer);loadDir()}}
+  try{
+    current=await api('/api/projects/'+current.id,{timeout:20000});
+    const pr=progressFromLog(current.log||'');
+    if(pr&&pr.done!==lastProgressDone){lastProgressDone=pr.done;lastProgressChangedAt=Date.now()}
+    if(current.status==='processing'&&String(current.stage||'').startsWith('jadx')&&lastProgressChangedAt&&Date.now()-lastProgressChangedAt>90000&&!recoveryRequested){
+      recoveryRequested=true;
+      $('statusBanner').className='status-banner warning';$('statusBanner').classList.remove('hidden');
+      $('statusTitle').textContent='JADX stalled';
+      $('statusText').textContent='No progress for 90 seconds. Switching automatically to per-DEX fallback…';
+      try{await api('/api/projects/'+current.id+'/recover',{method:'POST',timeout:30000})}catch(err){recoveryRequested=false}
+    }
+    renderProject();
+    if(current.status==='ready'||current.status==='error'){clearInterval(pollTimer);loadDir()}
+  }
   catch(e){
     $('statusBanner').className='status-banner error';$('statusBanner').classList.remove('hidden');
     if(String(e.message||'').includes('expired')||String(e.message||'').includes('no GitHub backup')){
