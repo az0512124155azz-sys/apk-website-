@@ -15,6 +15,8 @@ html,body{background:#0d1117;color:#e6edf3;margin:0}.hidden{display:none!importa
     <button class="brand" id="brandHome"><span style="font-size:20px">⬡</span><strong>APK Studio</strong></button>
     <span id="cloudState" class="cloud-state">checking processor…</span>
     <div class="topbar-spacer"></div>
+    <span id="githubUser" class="cloud-state"></span>
+    <button class="button" id="githubConnect">Connect GitHub</button>
     <label class="button primary mobile-upload" for="apkMobile">+ APK</label>
     <input id="apkMobile" hidden type="file" accept=".apk,application/vnd.android.package-archive">
   </header>
@@ -30,6 +32,10 @@ html,body{background:#0d1117;color:#e6edf3;margin:0}.hidden{display:none!importa
     <div class="upload-progress"><i id="uploadBar"></i></div>
     <div class="upload-strip" id="dropZone">⇧ Drop an APK anywhere on this row to create a project</div>
     <div class="project-list" id="projectList"></div>
+    <div id="githubProjectsWrap" class="hidden" style="margin-top:22px">
+      <div class="projects-toolbar" style="border-radius:6px 6px 0 0"><strong style="font-size:12px">GitHub projects</strong><span id="githubProjectCount"></span></div>
+      <div class="project-list" id="githubProjectList"></div>
+    </div>
     <input id="apkInput" hidden type="file" accept=".apk,application/vnd.android.package-archive">
   </div>
 </main>
@@ -40,7 +46,9 @@ html,body{background:#0d1117;color:#e6edf3;margin:0}.hidden{display:none!importa
     <span class="top-divider"></span>
     <button class="repo-crumb" id="backProjects2">Projects</button><span class="muted">›</span><strong class="repo-current" id="topRepoName"></strong>
     <div class="topbar-spacer"></div>
-    <a class="button quiet" id="vscodeLink" title="Download a VS Code workspace">▣ VS Code</a>
+    <button class="button quiet" id="githubPush">⇧ GitHub</button>
+    <button class="button quiet" id="vscodeOpen">▣ Open in VS Code</button>
+    <a class="button quiet" id="installHelper" href="/install-vscode-helper.ps1" download>Install VS Code Helper</a>
     <a class="button quiet" id="zipLink">↓ ZIP</a>
     <button class="button primary" id="buildTop">⚒ Build APK</button>
   </header>
@@ -98,6 +106,7 @@ html,body{background:#0d1117;color:#e6edf3;margin:0}.hidden{display:none!importa
 const API='/processor';
 const $=id=>document.getElementById(id);
 let projects=[],current=null,root='editable',dir='',selected='',saved='',pollTimer=null,openedAt=0;
+let githubSession={connected:false,user:null},githubProjects=[];
 
 const rootMeta={
  editable:{title:'Rebuildable APK',hint:'Manifest, resources and Smali'},
@@ -124,6 +133,56 @@ async function checkProcessor(){
 async function loadProjects(){
   try{const d=await api('/api/projects',{timeout:45000});projects=d.projects||[];renderProjects()}
   catch(e){$('projectList').innerHTML='<div class="empty-list"><strong>Processor unavailable</strong><span>'+esc(e.message)+'</span></div>'}
+}
+async function loadGithub(){
+  try{
+    githubSession=await api('/api/github/me',{timeout:30000});
+    if(githubSession.connected){
+      $('githubUser').textContent='@'+githubSession.user.login;
+      $('githubConnect').textContent='Disconnect GitHub';
+      await loadGithubProjects();
+    }else{
+      $('githubUser').textContent='';
+      $('githubConnect').textContent='Connect GitHub';
+      $('githubProjectsWrap').classList.add('hidden');
+    }
+  }catch{}
+}
+async function loadGithubProjects(){
+  try{
+    const d=await api('/api/github/projects',{timeout:30000});
+    githubProjects=d.projects||[];
+    $('githubProjectCount').textContent=githubProjects.length+' synced';
+    $('githubProjectsWrap').classList.toggle('hidden',!githubSession.connected);
+    $('githubProjectList').innerHTML=githubProjects.length?githubProjects.map(p=>`
+      <div class="project-row">
+        <button class="project-main" data-ghimport="${esc(p.full_name)}">
+          <div class="project-icon">GH</div>
+          <div class="project-text"><strong>${esc(p.name)}</strong><span>${esc(p.full_name)} · synced on GitHub</span></div>
+        </button>
+        <span class="project-status ready">● synced</span>
+        <span class="updated">${esc(p.updated_at||'')}</span>
+        <a class="row-action" href="${esc(p.html_url)}" target="_blank" rel="noreferrer">↗</a>
+      </div>`).join(''):'<div class="empty-list"><strong>No synced GitHub projects yet</strong><span>Push a project to GitHub and it will appear here on every device.</span></div>';
+    document.querySelectorAll('[data-ghimport]').forEach(el=>el.onclick=()=>importGithub(el.dataset.ghimport));
+  }catch(e){$('githubProjectList').innerHTML='<div class="empty-list"><strong>GitHub unavailable</strong><span>'+esc(e.message)+'</span></div>'}
+}
+async function connectGithub(){
+  if(githubSession.connected){
+    await api('/api/github/disconnect',{method:'POST'});githubSession={connected:false,user:null};await loadGithub();return;
+  }
+  const cfg=await api('/api/github/config');
+  if(cfg.oauth){location.href=API+'/api/github/oauth/start?returnTo='+encodeURIComponent(location.href);return}
+  const token=prompt('Paste a GitHub fine-grained token with repository access. This is stored only in an encrypted HttpOnly session cookie.');
+  if(!token)return;
+  await api('/api/github/connect',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({token})});
+  await loadGithub();
+}
+async function importGithub(fullName){
+  try{
+    const p=await api('/api/github/import',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({fullName}),timeout:120000});
+    await loadProjects();await openProject(p.id);
+  }catch(e){alert('GitHub import failed: '+e.message)}
 }
 function renderProjects(){
   const q=$('projectSearch').value.toLowerCase();
@@ -159,7 +218,7 @@ async function openProject(id){
   clearInterval(pollTimer);current=await api('/api/projects/'+id,{timeout:45000});openedAt=Date.now();
   $('projectsView').classList.add('hidden');$('workspaceView').classList.remove('hidden');
   const name=(current.originalName||id).replace(/\.apk$/i,'');$('repoName').textContent=name;$('topRepoName').textContent=name;
-  $('vscodeLink').href=API+'/api/projects/'+id+'/vscode';$('zipLink').href=API+'/api/projects/'+id+'/download';renderProject();dir='';selected='';setRoot('editable');loadDir();
+  $('zipLink').href=API+'/api/projects/'+id+'/download';renderProject();dir='';selected='';setRoot('editable');loadDir();
   pollTimer=setInterval(refreshCurrent,1500);
 }
 function goHome(){clearInterval(pollTimer);current=null;$('workspaceView').classList.add('hidden');$('projectsView').classList.remove('hidden');loadProjects()}
@@ -206,8 +265,31 @@ async function openFile(path){
 }
 async function saveFile(){if(!selected||root!=='editable')return;const q=new URLSearchParams({root,path:selected});try{await api('/api/projects/'+current.id+'/file?'+q,{method:'PUT',headers:{'content-type':'application/json'},body:JSON.stringify({content:$('editor').value}),timeout:30000});saved=$('editor').value;$('dirtyState').textContent='';$('saveFile').disabled=true}catch(e){alert(e.message)}}
 async function build(){if(!current)return;try{await api('/api/projects/'+current.id+'/build',{method:'POST',timeout:30000});current.buildStatus='building';switchSection('build');renderProject();clearInterval(pollTimer);pollTimer=setInterval(refreshCurrent,1500)}catch(e){alert(e.message)}}
+async function pushGithub(){
+  if(!current)return;
+  if(!githubSession.connected){await connectGithub();if(!githubSession.connected)return}
+  const suggested=(current.originalName||'apk-studio-project').replace(/\.apk$/i,'').replace(/[^A-Za-z0-9._-]+/g,'-');
+  const repoName=prompt('GitHub repository name:',current.githubRepo?current.githubRepo.split('/').pop():suggested);if(!repoName)return;
+  try{
+    $('githubPush').disabled=true;$('githubPush').textContent='Pushing…';
+    const d=await api('/api/projects/'+current.id+'/github/push',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({repoName,private:true}),timeout:180000});
+    current=d.project||current;alert('Pushed to GitHub: '+d.repo.full_name);await loadGithubProjects();
+  }catch(e){alert('GitHub push failed: '+e.message)}
+  finally{$('githubPush').disabled=false;$('githubPush').textContent='⇧ GitHub'}
+}
+async function openVsCode(){
+  if(!current)return;
+  try{
+    const d=await api('/api/projects/'+current.id+'/vscode-link',{timeout:30000});
+    location.href=d.url;
+    setTimeout(()=>{if(confirm('If VS Code did not open, install the APK Studio VS Code Helper now?'))location.href='/install-vscode-helper.ps1'},1400);
+  }catch(e){alert('Open in VS Code failed: '+e.message)}
+}
 function switchSection(s){document.querySelectorAll('.repo-nav button').forEach(b=>b.classList.toggle('active',b.dataset.section===s));$('codeSection').classList.toggle('hidden',s!=='code');$('analysisSection').classList.toggle('hidden',s!=='analysis');$('buildSection').classList.toggle('hidden',s!=='build')}
 
+$('githubConnect').onclick=()=>connectGithub();
+$('githubPush').onclick=()=>pushGithub();
+$('vscodeOpen').onclick=()=>openVsCode();
 $('newProject').onclick=()=>$('apkInput').click();$('apkInput').onchange=e=>upload(e.target.files[0]);$('apkMobile').onchange=e=>upload(e.target.files[0]);
 $('dropZone').ondragover=e=>{e.preventDefault();$('dropZone').classList.add('drag')};$('dropZone').ondragleave=()=>$('dropZone').classList.remove('drag');$('dropZone').ondrop=e=>{e.preventDefault();$('dropZone').classList.remove('drag');upload(e.dataTransfer.files[0])};
 $('projectSearch').oninput=renderProjects;$('backProjects').onclick=goHome;$('backProjects2').onclick=goHome;$('brandHome').onclick=loadProjects;
@@ -215,7 +297,7 @@ $('rootPicker').onclick=()=>$('rootMenu').classList.toggle('hidden');document.qu
 $('refreshTree').onclick=loadDir;$('saveFile').onclick=saveFile;$('editor').oninput=()=>{const dirty=$('editor').value!==saved;$('dirtyState').textContent=dirty?'● Unsaved':'';$('saveFile').disabled=!dirty||root!=='editable'};
 $('buildTop').onclick=build;$('buildPage').onclick=build;document.querySelectorAll('.repo-nav button').forEach(b=>b.onclick=()=>switchSection(b.dataset.section));
 window.addEventListener('keydown',e=>{if((e.ctrlKey||e.metaKey)&&e.key.toLowerCase()==='s'){e.preventDefault();saveFile()}});
-checkProcessor();loadProjects();
+checkProcessor();loadProjects();loadGithub();
 </script>
 </body>
 </html>
