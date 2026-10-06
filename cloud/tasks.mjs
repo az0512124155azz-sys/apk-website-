@@ -25,7 +25,7 @@ export async function decompile(id,{forceJadxOom=false,skipPerDex=false}={}){
       '-cp',jadxJar,'jadx.cli.JadxCLI',
       '--show-bad-code','-j','1',
       '-d',readable,apk
-    ],[0,3]);
+    ],[0,3],{idleTimeoutMs:60000,timeoutMs:180000});
     jadxExitCode=j.code;
     jadxWarnings=j.code===3;
     if(j.code===3) await log(id,'WARNING: JADX finished with recoverable decompilation warnings.');
