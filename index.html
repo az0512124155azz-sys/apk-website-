@@ -175,6 +175,25 @@ async function checkProcessor(){
   try{const h=await api('/health',{timeout:45000});$('cloudState').textContent='● processor online';$('cloudState').className='cloud-state ok'}
   catch(e){$('cloudState').textContent='● processor unavailable';$('cloudState').className='cloud-state bad'}
 }
+async function finishGithubHandoff(){
+  const url=new URL(location.href);
+  const handoff=url.searchParams.get('github_handoff');
+  if(!handoff)return;
+  try{
+    const result=await api('/api/github/oauth/handoff',{
+      method:'POST',
+      headers:{'content-type':'application/json'},
+      body:JSON.stringify({handoff}),
+      timeout:30000
+    });
+    githubSession=result;
+  }catch(e){
+    console.error('GitHub handoff failed',e);
+  }finally{
+    url.searchParams.delete('github_handoff');
+    history.replaceState({},'',url.pathname+(url.search?'?'+url.searchParams.toString():'')+url.hash);
+  }
+}
 async function loadProjects(){
   try{const d=await api('/api/projects',{timeout:45000});projects=d.projects||[];renderProjects()}
   catch(e){$('projectList').innerHTML='<div class="empty-list"><strong>Processor unavailable</strong><span>'+esc(e.message)+'</span></div>'}
@@ -382,7 +401,7 @@ $('rootPicker').onclick=()=>$('rootMenu').classList.toggle('hidden');document.qu
 $('refreshTree').onclick=loadDir;$('saveFile').onclick=saveFile;$('editor').oninput=()=>{const dirty=$('editor').value!==saved;$('dirtyState').textContent=dirty?'● Unsaved':'';$('saveFile').disabled=!dirty||root!=='editable'};
 $('buildTop').onclick=build;$('buildPage').onclick=build;document.querySelectorAll('.repo-nav button').forEach(b=>b.onclick=()=>switchSection(b.dataset.section));
 window.addEventListener('keydown',e=>{if((e.ctrlKey||e.metaKey)&&e.key.toLowerCase()==='s'){e.preventDefault();saveFile()}});
-checkProcessor();loadProjects();loadGithub();
+(async()=>{await checkProcessor();await finishGithubHandoff();await loadGithub();await loadProjects()})();
 </script>
 </body>
 </html>
