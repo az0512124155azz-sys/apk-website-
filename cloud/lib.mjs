@@ -5,7 +5,7 @@ import { spawn } from 'node:child_process';
 
 export const ROOT=process.env.WORKSPACE_ROOT||path.join(os.tmpdir(),'apk-studio-cloud');
 export const TOOLS=path.resolve('.tools');
-export const java=process.env.JAVA_BIN||'java';
+export const java=process.env.JAVA_BIN||path.join(TOOLS,'java','bin','java');
 export const jadxJar=path.join(TOOLS,'jadx','lib','jadx-1.5.6-all.jar');
 export const apktoolJar=path.join(TOOLS,'apktool','apktool.jar');
 
