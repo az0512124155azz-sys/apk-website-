@@ -149,5 +149,74 @@ app.get('/api/projects/:id/vscode',async(req,res,next)=>{
   }catch(e){next(e);}
 });
 
+
+app.get('/api/selftest/start',async(req,res,next)=>{
+  try{
+    const id=crypto.randomUUID();
+    const dir=projectDir(id);
+    await fs.ensureDir(dir);
+    const selftestFile=path.join(dir,'selftest.json');
+    await fs.writeJson(selftestFile,{id,status:'starting',checks:{},startedAt:new Date().toISOString()},{spaces:2});
+
+    void (async()=>{
+      const update=async patch=>{
+        const prev=await fs.readJson(selftestFile).catch(()=>({id,checks:{}}));
+        await fs.writeJson(selftestFile,{...prev,...patch,checks:{...(prev.checks||{}),...(patch.checks||{})}},{spaces:2});
+      };
+      try{
+        const sample='https://raw.githubusercontent.com/sentry-demos/android/main/app-debug.apk';
+        await update({status:'downloading'});
+        const response=await fetch(sample);
+        if(!response.ok) throw new Error('Sample APK download failed: HTTP '+response.status);
+        const buf=Buffer.from(await response.arrayBuffer());
+        await fs.writeFile(path.join(dir,'original.apk'),buf);
+        const meta={id,originalName:'sentry-demo-app-debug.apk',size:buf.length,status:'queued',stage:'queued',createdAt:new Date().toISOString(),updatedAt:new Date().toISOString()};
+        await fs.writeJson(path.join(dir,'project.json'),meta,{spaces:2});
+        await fs.writeFile(path.join(dir,'build.log'),'');
+        await update({status:'decompiling',checks:{download:true,apkBytes:buf.length}});
+
+        await decompile(id,{forceJadxOom:true});
+        const after=await readMeta(id);
+        const fallbackPass=after.status==='ready' && after.readableAvailable===false && after.jadxWarnings===true;
+        await update({status:'tree',checks:{oomFallback:fallbackPass,decompileStatus:after.status}});
+
+        if(after.status!=='ready') throw new Error('Fallback decompile did not reach ready: '+(after.error||after.status));
+        const editable=path.join(dir,'editable');
+        const rootItems=await listDir(editable,'');
+        const treePass=rootItems.length>0;
+        const yaml=path.join(editable,'apktool.yml');
+        const before=await fs.readFile(yaml,'utf8');
+        await fs.writeFile(yaml,before+'\n# apk-studio-selftest\n','utf8');
+        const afterWrite=await fs.readFile(yaml,'utf8');
+        const writePass=afterWrite.includes('# apk-studio-selftest');
+        await update({status:'building',checks:{tree:treePass,fileRead:before.length>0,fileWrite:writePass}});
+
+        await rebuild(id);
+        const built=await readMeta(id);
+        const artifact=built.buildArtifact ? safeJoin(dir,built.buildArtifact) : '';
+        const buildPass=built.buildStatus==='ready' && artifact && await fs.pathExists(artifact);
+        await update({
+          status:buildPass?'passed':'failed',
+          finishedAt:new Date().toISOString(),
+          checks:{build:!!buildPass,buildStatus:built.buildStatus},
+          projectId:id,
+          error:buildPass?null:(built.buildError||'Build artifact missing')
+        });
+      }catch(e){
+        await update({status:'failed',finishedAt:new Date().toISOString(),error:String(e?.message||e)});
+      }
+    })();
+
+    res.json({ok:true,selftestId:id,statusUrl:'/api/selftest/status/'+id});
+  }catch(e){next(e);}
+});
+
+app.get('/api/selftest/status/:id',async(req,res,next)=>{
+  try{
+    const file=path.join(projectDir(req.params.id),'selftest.json');
+    res.json(await fs.readJson(file));
+  }catch(e){next(e);}
+});
+
 app.use((e,_req,res,_next)=>res.status(e?.code==='LIMIT_FILE_SIZE'?413:400).json({error:e?.message||'Unexpected error'}));
 app.listen(port,'0.0.0.0',()=>console.log(`APK Studio Cloud API listening on ${port}`));
