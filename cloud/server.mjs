@@ -116,6 +116,75 @@ async function streamVsCodeZip(id,res,next){
   }catch(e){next(e);}
 }
 
+function autoRepoName(id){return 'apk-studio-'+String(id).toLowerCase();}
+async function getGithubUser(token){return gh(token,'/user');}
+async function ensureAutoRepo(token,id,meta={}){
+  const user=await getGithubUser(token);
+  const name=autoRepoName(id);
+  let repoInfo;
+  try{repoInfo=await gh(token,`/repos/${user.login}/${name}`)}
+  catch(e){
+    if(e.status!==404)throw e;
+    repoInfo=await gh(token,'/user/repos',{method:'POST',body:{name,private:true,description:'APK Studio project: '+String(meta.originalName||id)}});
+  }
+  await gh(token,`/repos/${user.login}/${name}/topics`,{method:'PUT',body:{names:['apk-studio-project']}}).catch(()=>{});
+  return repoInfo;
+}
+async function syncAutoRepo(token,id,{workspace=true}={}){
+  const dir=projectDir(id);
+  const meta=await readMeta(id);
+  const repoInfo=await ensureAutoRepo(token,id,meta);
+  const work=path.join(dir,'github-auto');
+  await fs.remove(work);await fs.ensureDir(work);
+  let cloned=false;
+  try{await gitRun(dir,['clone','--depth','1',repoInfo.clone_url,work],token);cloned=true}catch{}
+  if(cloned){for(const entry of await fs.readdir(work)){if(entry!=='.git')await fs.remove(path.join(work,entry))}}
+  const original=path.join(dir,'original.apk');
+  if(await fs.pathExists(original)){
+    const st=await fs.stat(original);
+    if(st.size<95*1024*1024)await fs.copy(original,path.join(work,'original.apk'));
+  }
+  if(workspace){
+    const editable=path.join(dir,'editable'),readable=path.join(dir,'readable');
+    if(await fs.pathExists(editable))await fs.copy(editable,path.join(work,'rebuildable'));
+    if(await fs.pathExists(readable))await fs.copy(readable,path.join(work,'readable'));
+  }
+  const manifest={format:2,projectId:id,originalName:meta.originalName,size:meta.size,status:meta.status,stage:meta.stage,readableAvailable:meta.readableAvailable,readableMode:meta.readableMode,updatedAt:new Date().toISOString()};
+  await fs.writeJson(path.join(work,'apk-studio.json'),manifest,{spaces:2});
+  await fs.writeJson(path.join(work,'apk-studio.code-workspace'),{folders:[{name:'Rebuildable APK',path:'rebuildable'},...((await fs.pathExists(path.join(work,'readable')))?[{name:'Readable Source',path:'readable'}]:[])]},{spaces:2});
+  if(!cloned)await gitRun(work,['init'],token);
+  await gitRun(work,['config','user.name','APK Studio'],token);
+  await gitRun(work,['config','user.email','apk-studio@users.noreply.github.com'],token);
+  await gitRun(work,['add','-A'],token);
+  try{await gitRun(work,['commit','-m',workspace?'Sync APK Studio workspace':'Back up APK Studio upload'],token)}catch(e){if(!String(e.message).includes('nothing to commit'))throw e}
+  await gitRun(work,['branch','-M','main'],token);
+  if(!cloned)await gitRun(work,['remote','add','origin',repoInfo.clone_url],token);
+  await gitRun(work,['push','-u','origin','main'],token);
+  const next=await writeMeta(id,{githubRepo:repoInfo.full_name,githubUrl:repoInfo.html_url,githubCloneUrl:repoInfo.clone_url,githubSyncedAt:new Date().toISOString(),persistent:true});
+  return {repoInfo,project:next};
+}
+async function ensureProjectAvailable(req,id){
+  const dir=projectDir(id),metaFile=path.join(dir,'project.json');
+  if(await fs.pathExists(metaFile))return readMeta(id);
+  const token=githubToken(req);
+  if(!token){const e=new Error('Project workspace expired after a processor restart. Re-upload the APK or reconnect GitHub to restore synced projects.');e.status=410;throw e}
+  const user=await getGithubUser(token),repoName=autoRepoName(id);
+  let repoInfo;
+  try{repoInfo=await gh(token,`/repos/${user.login}/${repoName}`)}
+  catch(e){const err=new Error('Project workspace expired and no GitHub backup was found. Please upload the APK again once; future connected projects are backed up automatically.');err.status=410;throw err}
+  await fs.ensureDir(dir);
+  const clone=path.join(dir,'restore');
+  await gitRun(dir,['clone','--depth','1',repoInfo.clone_url,clone],token);
+  const manifest=await fs.readJson(path.join(clone,'apk-studio.json')).catch(()=>({}));
+  if(await fs.pathExists(path.join(clone,'original.apk')))await fs.copy(path.join(clone,'original.apk'),path.join(dir,'original.apk'));
+  if(await fs.pathExists(path.join(clone,'rebuildable')))await fs.copy(path.join(clone,'rebuildable'),path.join(dir,'editable'));
+  if(await fs.pathExists(path.join(clone,'readable')))await fs.copy(path.join(clone,'readable'),path.join(dir,'readable'));
+  const restored={id,originalName:manifest.originalName||repoName+'.apk',size:manifest.size||0,status:(await fs.pathExists(path.join(dir,'editable')))?'ready':'queued',stage:(await fs.pathExists(path.join(dir,'editable')))?'ready':'queued',readableAvailable:manifest.readableAvailable!==false,readableMode:manifest.readableMode||'github',githubRepo:repoInfo.full_name,githubUrl:repoInfo.html_url,githubCloneUrl:repoInfo.clone_url,persistent:true,restoredAt:new Date().toISOString(),createdAt:new Date().toISOString(),updatedAt:new Date().toISOString()};
+  await fs.writeJson(metaFile,restored,{spaces:2});await fs.writeFile(path.join(dir,'build.log'),'[restored from GitHub]\n');
+  if(restored.status==='queued'&&await fs.pathExists(path.join(dir,'original.apk')))void decompile(id);
+  return restored;
+}
+
 app.get('/',(_req,res)=>res.json({name:'APK Studio Cloud API',ok:true,version:'1.0.0'}));
 app.get('/health',async(_req,res)=>{
   res.json({ok:true,version:'1.0.0'});
@@ -138,14 +207,19 @@ app.post('/api/projects/upload',upload.single('apk'),async(req,res,next)=>{
     const meta={id,originalName:req.file.originalname,size:req.file.size,status:'queued',stage:'queued',createdAt:new Date().toISOString(),updatedAt:new Date().toISOString()};
     await fs.writeJson(path.join(dir,'project.json'),meta,{spaces:2});
     await fs.writeFile(path.join(dir,'build.log'),'');
-    void decompile(id);
-    res.status(202).json(meta);
+    const token=githubToken(req);
+    if(token){
+      try{const backup=await syncAutoRepo(token,id,{workspace:false});Object.assign(meta,backup.project)}
+      catch(e){await fs.appendFile(path.join(dir,'build.log'),'[warning] GitHub backup failed: '+String(e.message||e)+'\n')}
+    }
+    void (async()=>{await decompile(id);if(token){try{await syncAutoRepo(token,id,{workspace:true})}catch(e){await fs.appendFile(path.join(dir,'build.log'),'[warning] GitHub workspace sync failed: '+String(e.message||e)+'\n')}}})();
+    res.status(202).json(await readMeta(id));
   }catch(e){next(e);}
 });
 
 app.get('/api/projects/:id',async(req,res,next)=>{
   try{
-    const m=await readMeta(req.params.id);
+    const m=await ensureProjectAvailable(req,req.params.id);
     const log=await fs.readFile(path.join(projectDir(req.params.id),'build.log'),'utf8').catch(()=> '');
     res.json({...m,log});
   }catch(e){next(e);}
@@ -157,6 +231,7 @@ app.delete('/api/projects/:id',async(req,res,next)=>{
 
 app.get('/api/projects/:id/tree',async(req,res,next)=>{
   try{
+    await ensureProjectAvailable(req,req.params.id);
     const root=String(req.query.root||'editable');
     if(!['editable','readable'].includes(root))throw new Error('Invalid root');
     const base=path.join(projectDir(req.params.id),root);
@@ -166,6 +241,7 @@ app.get('/api/projects/:id/tree',async(req,res,next)=>{
 
 app.get('/api/projects/:id/file',async(req,res,next)=>{
   try{
+    await ensureProjectAvailable(req,req.params.id);
     const root=String(req.query.root||'editable');
     if(!['editable','readable'].includes(root))throw new Error('Invalid root');
     const file=safeJoin(path.join(projectDir(req.params.id),root),String(req.query.path||''));
@@ -179,6 +255,7 @@ app.get('/api/projects/:id/file',async(req,res,next)=>{
 
 app.put('/api/projects/:id/file',async(req,res,next)=>{
   try{
+    await ensureProjectAvailable(req,req.params.id);
     const root=String(req.query.root||'editable');
     if(root!=='editable')throw new Error('Readable source is read-only');
     const file=safeJoin(path.join(projectDir(req.params.id),root),String(req.query.path||''));
@@ -188,7 +265,7 @@ app.put('/api/projects/:id/file',async(req,res,next)=>{
 });
 
 app.post('/api/projects/:id/build',async(req,res,next)=>{
-  try{void rebuild(req.params.id);res.status(202).json({ok:true});}catch(e){next(e);}
+  try{await ensureProjectAvailable(req,req.params.id);void rebuild(req.params.id);res.status(202).json({ok:true});}catch(e){next(e);}
 });
 
 app.get('/api/projects/:id/apk',async(req,res,next)=>{
@@ -201,6 +278,7 @@ app.get('/api/projects/:id/apk',async(req,res,next)=>{
 
 app.get('/api/projects/:id/download',async(req,res,next)=>{
   try{
+    await ensureProjectAvailable(req,req.params.id);
     const dir=projectDir(req.params.id);
     res.attachment('apk-studio-project.zip');
     const a=archiver('zip',{zlib:{level:6}});
@@ -212,7 +290,7 @@ app.get('/api/projects/:id/vscode',async(req,res,next)=>streamVsCodeZip(req.para
 
 app.get('/api/projects/:id/vscode-link',async(req,res,next)=>{
   try{
-    const meta=await readMeta(req.params.id);
+    const meta=await ensureProjectAvailable(req,req.params.id);
     const expires=Date.now()+5*60*1000;
     const token=vscodeToken(req.params.id,expires);
     const download=`${publicOrigin}/processor/api/projects/${req.params.id}/vscode-download?expires=${expires}&token=${encodeURIComponent(token)}`;
@@ -390,7 +468,7 @@ app.get('/api/selftest/status/:id',async(req,res,next)=>{
   }catch(e){next(e);}
 });
 
-app.use((e,_req,res,_next)=>res.status(e?.code==='LIMIT_FILE_SIZE'?413:400).json({error:e?.message||'Unexpected error'}));
+app.use((e,_req,res,_next)=>res.status(e?.status|| (e?.code==='LIMIT_FILE_SIZE'?413:400)).json({error:e?.message||'Unexpected error'}));
 app.listen(port,'0.0.0.0',async()=>{
   console.log(`APK Studio Cloud API listening on ${port}`);
   if(process.env.SELFTEST_ON_BOOT==='1'){
