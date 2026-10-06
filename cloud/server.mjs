@@ -219,4 +219,23 @@ app.get('/api/selftest/status/:id',async(req,res,next)=>{
 });
 
 app.use((e,_req,res,_next)=>res.status(e?.code==='LIMIT_FILE_SIZE'?413:400).json({error:e?.message||'Unexpected error'}));
-app.listen(port,'0.0.0.0',()=>console.log(`APK Studio Cloud API listening on ${port}`));
+app.listen(port,'0.0.0.0',async()=>{
+  console.log(`APK Studio Cloud API listening on ${port}`);
+  if(process.env.SELFTEST_ON_BOOT==='1'){
+    try{
+      console.log('[SELFTEST] starting');
+      const start=await fetch(`http://127.0.0.1:${port}/api/selftest/start`).then(r=>r.json());
+      console.log('[SELFTEST] id',start.selftestId);
+      for(let i=0;i<180;i++){
+        await new Promise(r=>setTimeout(r,2000));
+        const state=await fetch(`http://127.0.0.1:${port}/api/selftest/status/${start.selftestId}`).then(r=>r.json());
+        if(state.status==='passed'||state.status==='failed'){
+          console.log('[SELFTEST] RESULT',JSON.stringify(state));
+          break;
+        }
+      }
+    }catch(e){
+      console.error('[SELFTEST] BOOT ERROR',e);
+    }
+  }
+});
