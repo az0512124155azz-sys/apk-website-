@@ -241,7 +241,18 @@ app.get('/api/github/oauth/callback',async(req,res,next)=>{
     const code=String(req.query.code||''); if(!code) throw new Error('Missing GitHub OAuth code');
     const r=await fetch('https://github.com/login/oauth/access_token',{method:'POST',headers:{'Accept':'application/json','Content-Type':'application/json'},body:JSON.stringify({client_id:githubClientId,client_secret:githubClientSecret,code})});
     const d=await r.json(); if(!d.access_token) throw new Error(d.error_description||d.error||'GitHub OAuth failed');
-    setGithubCookie(res,d.access_token);res.redirect(publicOrigin+'/?github=connected');
+    const handoff=seal(JSON.stringify({token:d.access_token,expires:Date.now()+60000}));
+    res.redirect(publicOrigin+'/?github_handoff='+encodeURIComponent(handoff));
+  }catch(e){next(e);}
+});
+
+app.post('/api/github/oauth/handoff',async(req,res,next)=>{
+  try{
+    const raw=unseal(String(req.body.handoff||'')); if(!raw) throw new Error('Invalid GitHub handoff');
+    const data=JSON.parse(raw); if(!data.token||!data.expires||Number(data.expires)<Date.now()) throw new Error('GitHub handoff expired');
+    const user=await gh(data.token,'/user');
+    setGithubCookie(res,data.token);
+    res.json({connected:true,user:{login:user.login,name:user.name,avatar_url:user.avatar_url}});
   }catch(e){next(e);}
 });
 
