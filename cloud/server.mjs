@@ -290,7 +290,7 @@ app.get('/api/projects/:id/apk',async(req,res,next)=>{
   try{
     const m=await readMeta(req.params.id);
     if(!m.buildArtifact)return res.status(404).json({error:'No rebuilt APK available'});
-    res.download(safeJoin(projectDir(req.params.id),m.buildArtifact),'app-rebuilt-unsigned.apk');
+    res.download(safeJoin(projectDir(req.params.id),m.buildArtifact),m.buildSigned?'app-rebuilt-signed.apk':'app-rebuilt.apk');
   }catch(e){next(e);}
 });
 
