@@ -4,6 +4,10 @@ import AdmZip from 'adm-zip';
 import {java,jadxJar,apktoolJar,projectDir,writeMeta,run,walk,log} from './lib.mjs';
 
 const shortError = (e) => String(e?.message || e || 'Unknown error').slice(-12000);
+const localMode = process.env.LOCAL_PROCESSOR === '1';
+const javaXmx = process.env.APK_STUDIO_JAVA_XMX || (localMode ? '4096m' : '352m');
+const javaXms = process.env.APK_STUDIO_JAVA_XMS || (localMode ? '256m' : '64m');
+const workerThreads = String(Number(process.env.APK_STUDIO_THREADS || (localMode ? 4 : 1)));
 
 export async function decompile(id,{forceJadxOom=false,skipPerDex=false}={}){
   const dir=projectDir(id),apk=path.join(dir,'original.apk'),readable=path.join(dir,'readable'),editable=path.join(dir,'editable');
@@ -21,9 +25,9 @@ export async function decompile(id,{forceJadxOom=false,skipPerDex=false}={}){
   try{
     if(forceJadxOom) throw new Error('java exited with 1\njava.lang.OutOfMemoryError: Java heap space (forced self-test)');
     const j=await run(id,java,[
-      '-Xms64m','-Xmx352m','-XX:+UseSerialGC',
+      '-Xms'+javaXms,'-Xmx'+javaXmx,'-XX:+UseSerialGC',
       '-cp',jadxJar,'jadx.cli.JadxCLI',
-      '--show-bad-code','-j','1',
+      '--show-bad-code','-j',workerThreads,
       '-d',readable,apk
     ],[0,3],{idleTimeoutMs:60000,timeoutMs:180000});
     jadxExitCode=j.code;
@@ -56,9 +60,9 @@ export async function decompile(id,{forceJadxOom=false,skipPerDex=false}={}){
           try{
             await log(id,`INFO: JADX fallback ${en.entryName}...`);
             const r=await run(id,java,[
-              '-Xms48m','-Xmx320m','-XX:+UseSerialGC',
+              '-Xms'+javaXms,'-Xmx'+javaXmx,'-XX:+UseSerialGC',
               '-cp',jadxJar,'jadx.cli.JadxCLI',
-              '--show-bad-code','-j','1',
+              '--show-bad-code','-j',workerThreads,
               '-d',out,dexFile
             ],[0,3]);
             success++;
@@ -91,8 +95,8 @@ export async function decompile(id,{forceJadxOom=false,skipPerDex=false}={}){
 
   try{
     await run(id,java,[
-      '-Xms64m','-Xmx352m','-XX:+UseSerialGC',
-      '-jar',apktoolJar,'d','-f','-j','1','-o',editable,apk
+      '-Xms'+javaXms,'-Xmx'+javaXmx,'-XX:+UseSerialGC',
+      '-jar',apktoolJar,'d','-f','-j',workerThreads,'-o',editable,apk
     ],[0]);
 
     const files=await walk(editable);
@@ -120,12 +124,13 @@ export async function rebuild(id){
   await fs.ensureDir(output);
   await writeMeta(id,{buildStatus:'building',buildError:null});
   await log(id,'=== BUILD START ===');
+  await log(id,`Build resources: heap=${javaXmx}, threads=${workerThreads}, local=${localMode}`);
   try{
     const artifact=path.join(output,'app-rebuilt-unsigned.apk');
     await run(id,java,[
-      '-Xms64m','-Xmx352m','-XX:+UseSerialGC',
-      '-jar',apktoolJar,'b','-j','1',editable,'-o',artifact
-    ],[0]);
+      '-Xms'+javaXms,'-Xmx'+javaXmx,'-XX:+UseSerialGC',
+      '-jar',apktoolJar,'b','-j',workerThreads,editable,'-o',artifact
+    ],[0],{idleTimeoutMs:180000,timeoutMs:1200000});
     await writeMeta(id,{buildStatus:'ready',buildArtifact:'output/app-rebuilt-unsigned.apk'});
   }catch(e){
     const buildError=shortError(e);
