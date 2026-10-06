@@ -85,6 +85,13 @@ async function requireGithub(req){
 function cleanRepoName(name){
   return String(name||'apk-studio-project').replace(/\.apk$/i,'').replace(/[^A-Za-z0-9._-]+/g,'-').replace(/^-+|-+$/g,'').slice(0,80)||'apk-studio-project';
 }
+async function killProjectJava(id){
+  return new Promise(resolve=>{
+    const p=spawn('pkill',['-f',String(id)],{shell:false});
+    p.on('error',()=>resolve(false));
+    p.on('close',code=>resolve(code===0));
+  });
+}
 async function gitRun(cwd,args,token){
   return new Promise((resolve,reject)=>{
     const basic=Buffer.from('x-access-token:'+token).toString('base64');
@@ -261,6 +268,17 @@ app.put('/api/projects/:id/file',async(req,res,next)=>{
     const file=safeJoin(path.join(projectDir(req.params.id),root),String(req.query.path||''));
     await fs.writeFile(file,String(req.body.content??''),'utf8');
     res.json({ok:true});
+  }catch(e){next(e);}
+});
+
+app.post('/api/projects/:id/recover',async(req,res,next)=>{
+  try{
+    await ensureProjectAvailable(req,req.params.id);
+    await killProjectJava(req.params.id);
+    await fs.appendFile(path.join(projectDir(req.params.id),'build.log'),'[recovery] Stalled full JADX detected. Switching to per-DEX fallback.\n');
+    await writeMeta(req.params.id,{status:'processing',stage:'jadx-fallback',recoveryStartedAt:new Date().toISOString(),error:null});
+    void decompile(req.params.id,{forceJadxOom:true});
+    res.status(202).json({ok:true,stage:'jadx-fallback'});
   }catch(e){next(e);}
 });
 
