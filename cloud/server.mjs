@@ -118,5 +118,36 @@ app.get('/api/projects/:id/download',async(req,res,next)=>{
   }catch(e){next(e);}
 });
 
+app.get('/api/projects/:id/vscode',async(req,res,next)=>{
+  try{
+    const id=req.params.id;
+    const dir=projectDir(id);
+    const editable=path.join(dir,'editable');
+    const readable=path.join(dir,'readable');
+    if(!await fs.pathExists(editable)) return res.status(409).json({error:'Project is not ready yet'});
+
+    const workspace={
+      folders:[
+        {name:'Rebuildable APK',path:'rebuildable'},
+        ...((await fs.pathExists(readable)) ? [{name:'Readable Source',path:'readable'}] : [])
+      ],
+      settings:{
+        'files.exclude':{'**/.DS_Store':true},
+        'editor.tabSize':2
+      }
+    };
+
+    res.attachment('apk-studio-vscode.zip');
+    const a=archiver('zip',{zlib:{level:6}});
+    a.on('error',next);
+    a.pipe(res);
+    a.directory(editable,'rebuildable');
+    if(await fs.pathExists(readable)) a.directory(readable,'readable');
+    a.append(JSON.stringify(workspace,null,2),{name:'apk-studio.code-workspace'});
+    a.append('Extract this ZIP, then open apk-studio.code-workspace in Visual Studio Code.\n',{name:'OPEN-IN-VSCODE.txt'});
+    await a.finalize();
+  }catch(e){next(e);}
+});
+
 app.use((e,_req,res,_next)=>res.status(e?.code==='LIMIT_FILE_SIZE'?413:400).json({error:e?.message||'Unexpected error'}));
 app.listen(port,'0.0.0.0',()=>console.log(`APK Studio Cloud API listening on ${port}`));
