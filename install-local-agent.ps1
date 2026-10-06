@@ -1,53 +1,96 @@
 param()
 $ErrorActionPreference='Stop'
+$ProgressPreference='SilentlyContinue'
+
 $installDir=Join-Path $env:LOCALAPPDATA 'APKStudioLocal'
-$zip=Join-Path $env:TEMP 'apkstudio-local.zip'
-$tmp=Join-Path $env:TEMP ('apkstudio-local-'+[guid]::NewGuid())
+$cloud=Join-Path $installDir 'cloud'
+$tools=Join-Path $cloud '.tools'
+$workspace=Join-Path $env:USERPROFILE 'APKStudio\Workspaces'
+$log=Join-Path $installDir 'install.log'
+
+New-Item -ItemType Directory -Force -Path $installDir | Out-Null
+Start-Transcript -Path $log -Append | Out-Null
+
+function Download([string]$url,[string]$out){
+  Invoke-WebRequest -UseBasicParsing -Uri $url -OutFile $out
+}
+function Expand-ZipClean([string]$zip,[string]$dest){
+  if(Test-Path $dest){Remove-Item -Recurse -Force $dest}
+  New-Item -ItemType Directory -Force -Path $dest | Out-Null
+  Expand-Archive -Force -Path $zip -DestinationPath $dest
+}
+function Wait-Health {
+  for($i=0;$i -lt 90;$i++){
+    try{
+      $r=Invoke-RestMethod -UseBasicParsing -Uri 'http://127.0.0.1:32145/health' -TimeoutSec 2
+      if($r.ok){return $true}
+    }catch{}
+    Start-Sleep -Seconds 2
+  }
+  return $false
+}
 
 Write-Host 'Installing APK Studio Local Agent...'
-if(Test-Path $installDir){Remove-Item -Recurse -Force $installDir}
-New-Item -ItemType Directory -Force -Path $installDir | Out-Null
 
-Invoke-WebRequest -UseBasicParsing -Uri 'https://github.com/az0512124155azz-sys/apk-website-/archive/refs/heads/cloud-prod.zip' -OutFile $zip
-Expand-Archive -Force $zip $tmp
-$src=Get-ChildItem $tmp -Directory | Select-Object -First 1
-Copy-Item -Recurse -Force (Join-Path $src.FullName 'cloud') $installDir
-Remove-Item -Recurse -Force $tmp -ErrorAction SilentlyContinue
-Remove-Item -Force $zip -ErrorAction SilentlyContinue
+# Stop any previous local agent.
+Get-CimInstance Win32_Process -ErrorAction SilentlyContinue |
+  Where-Object { $_.CommandLine -like '*APKStudioLocal*server.mjs*' } |
+  ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }
 
-$cloud=Join-Path $installDir 'cloud'
+# Refresh app files.
+$repoZip=Join-Path $env:TEMP 'apkstudio-cloud-prod.zip'
+$tmpRepo=Join-Path $env:TEMP ('apkstudio-repo-'+[guid]::NewGuid())
+Download 'https://github.com/az0512124155azz-sys/apk-website-/archive/refs/heads/cloud-prod.zip' $repoZip
+Expand-Archive -Force $repoZip $tmpRepo
+$repoRoot=Get-ChildItem $tmpRepo -Directory | Select-Object -First 1
+if(Test-Path $cloud){Remove-Item -Recurse -Force $cloud}
+Copy-Item -Recurse -Force (Join-Path $repoRoot.FullName 'cloud') $installDir
+Remove-Item -Recurse -Force $tmpRepo -ErrorAction SilentlyContinue
+Remove-Item -Force $repoZip -ErrorAction SilentlyContinue
+New-Item -ItemType Directory -Force -Path $tools | Out-Null
+
+# Portable Node.js LTS - no admin / winget required.
+$nodeDir=Join-Path $tools 'node'
+$nodeExe=Join-Path $nodeDir 'node.exe'
+$npmCmd=Join-Path $nodeDir 'npm.cmd'
+if(-not (Test-Path $nodeExe)){
+  $nodeZip=Join-Path $env:TEMP 'apkstudio-node.zip'
+  $nodeTmp=Join-Path $env:TEMP ('apkstudio-node-'+[guid]::NewGuid())
+  Download 'https://nodejs.org/dist/v22.20.0/node-v22.20.0-win-x64.zip' $nodeZip
+  Expand-Archive -Force $nodeZip $nodeTmp
+  $nodeRoot=Get-ChildItem $nodeTmp -Directory | Select-Object -First 1
+  if(Test-Path $nodeDir){Remove-Item -Recurse -Force $nodeDir}
+  Move-Item $nodeRoot.FullName $nodeDir
+  Remove-Item -Recurse -Force $nodeTmp -ErrorAction SilentlyContinue
+  Remove-Item -Force $nodeZip -ErrorAction SilentlyContinue
+}
+
+# Portable Java/JADX/Apktool.
 & powershell.exe -NoProfile -ExecutionPolicy Bypass -File (Join-Path $cloud 'install-tools-windows.ps1')
 
-$node=(Get-Command node -ErrorAction SilentlyContinue)
-if(-not $node){
-  $winget=(Get-Command winget -ErrorAction SilentlyContinue)
-  if(-not $winget){throw 'Node.js is required. Install Node.js LTS and run this installer again.'}
-  Write-Host 'Installing Node.js LTS...'
-  & winget install --id OpenJS.NodeJS.LTS --accept-package-agreements --accept-source-agreements --silent
-}
-$npm=(Get-Command npm -ErrorAction SilentlyContinue)
-if(-not $npm){
-  $npmPath=Join-Path $env:ProgramFiles 'nodejs\npm.cmd'
-  if(Test-Path $npmPath){$npm=$npmPath}else{throw 'npm was not found after Node.js installation.'}
-}else{$npm=$npm.Source}
-
+# Install backend dependencies using portable npm.
 Push-Location $cloud
-& $npm install --omit=dev
+& $npmCmd install --omit=dev --no-audit --no-fund
+if($LASTEXITCODE -ne 0){throw 'npm install failed'}
 Pop-Location
 
+New-Item -ItemType Directory -Force -Path $workspace | Out-Null
+
 $start=Join-Path $installDir 'start-local-agent.cmd'
+$nodeExeEsc=$nodeExe
 $java=Join-Path $cloud '.tools\java\bin\java.exe'
-$workspace=Join-Path $env:USERPROFILE 'APKStudio\Workspaces'
 $cmd=@"
 @echo off
 set PORT=32145
 set WORKSPACE_ROOT=$workspace
 set JAVA_BIN=$java
+set NODE_ENV=production
 cd /d "$cloud"
-node server.mjs
+"$nodeExeEsc" server.mjs >> "$installDir\agent.log" 2>&1
 "@
 Set-Content -Path $start -Value $cmd -Encoding ASCII
 
+# Start automatically with Windows.
 $startup=Join-Path $env:APPDATA 'Microsoft\Windows\Start Menu\Programs\Startup\APK Studio Local Agent.lnk'
 $w=New-Object -ComObject WScript.Shell
 $link=$w.CreateShortcut($startup)
@@ -56,8 +99,14 @@ $link.WorkingDirectory=$installDir
 $link.WindowStyle=7
 $link.Save()
 
+# Start now.
 Start-Process -FilePath $start -WindowStyle Hidden
-Write-Host ''
-Write-Host 'APK Studio Local Agent installed and started on http://127.0.0.1:32145' -ForegroundColor Green
-Write-Host 'You can now choose This computer in APK Studio.'
-Read-Host 'Press Enter to close'
+
+if(-not (Wait-Health)){
+  throw 'Local Agent installed but did not become healthy. See install.log and agent.log.'
+}
+
+Set-Content -Path (Join-Path $installDir 'installed.txt') -Value (Get-Date).ToString('o') -Encoding ASCII
+Write-Host 'APK Studio Local Agent is ready.' -ForegroundColor Green
+Stop-Transcript | Out-Null
+Start-Sleep -Seconds 1
