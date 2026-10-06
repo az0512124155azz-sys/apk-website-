@@ -178,7 +178,7 @@ function renderProject(){
   const b=$('statusBanner');b.className='status-banner';b.classList.remove('hidden');
   if(current.status==='error'){b.classList.add('error');$('statusTitle').textContent='Decompile failed';$('statusText').textContent=current.error||'Unknown error'}
   else if(!ready){const pr=progressFromLog(current.log||'');const sec=Math.floor((Date.now()-openedAt)/1000);$('statusTitle').textContent=current.stage==='jadx'?'Decompiling':'Preparing project';$('statusText').innerHTML='<span class="stage-detail">'+esc(current.stage||current.status)+(pr?' · '+pr.pct+'% ('+pr.done+'/'+pr.total+')':'')+' · '+sec+'s</span>'}
-  else if(current.jadxWarnings){b.classList.add('warning');$('statusTitle').textContent=current.readableAvailable===false?'Readable source unavailable':'Readable source has warnings';$('statusText').textContent=current.readableAvailable===false?'JADX could not finish within the server memory limit. Smali, Manifest and resources are ready in Rebuildable APK.':'JADX completed with warnings; Smali and resources are available.'}
+  else if(current.jadxWarnings){b.classList.add('warning');if(current.readableAvailable===false){$('statusTitle').textContent='Readable source unavailable';$('statusText').textContent='JADX could not finish within the server memory limit. Smali, Manifest and resources are ready in Rebuildable APK.'}else if(current.readableMode&&current.readableMode!=='full'){$('statusTitle').textContent='Readable source recovered';$('statusText').textContent='JADX full-app mode exceeded memory, so APK Studio recovered readable source one DEX at a time. Some classes may still be missing.'}else{$('statusTitle').textContent='Readable source has warnings';$('statusText').textContent='JADX completed with warnings; Smali and resources are available.'}}
   else b.classList.add('hidden');
 
   $('detailsTable').innerHTML=[
@@ -186,7 +186,7 @@ function renderProject(){
     ['JADX exit code',current.jadxExitCode??'—'],['Decoded files',current.editableFileCount??'—']
   ].map(x=>'<div><span>'+esc(x[0])+'</span><strong>'+esc(x[1])+'</strong></div>').join('');
   $('buildTable').innerHTML='<div><span>APK rebuild</span><span class="project-status '+esc(current.buildStatus||'idle')+'">● '+esc(current.buildStatus||'idle')+'</span><code>'+esc(current.buildError||'')+'</code></div>';
-  $('buildLog').textContent=current.log||'No output yet.';
+  const buildMarker='=== BUILD START ===';const buildPart=(current.log||'').includes(buildMarker)?(current.log||'').split(buildMarker).pop().trim():'';$('buildLog').textContent=buildPart||'No build started yet.';
   if(current.buildArtifact){$('apkArtifact').classList.remove('hidden');$('apkArtifact').href=API+'/api/projects/'+current.id+'/apk'}else $('apkArtifact').classList.add('hidden');
 }
 function setRoot(r){root=r;dir='';selected='';$('rootTitle').textContent=rootMeta[r].title;$('rootHint').textContent=rootMeta[r].hint;$('rootCrumb').textContent=rootMeta[r].title;$('statusRoot').textContent=rootMeta[r].title;document.querySelectorAll('#rootMenu button').forEach(b=>b.classList.toggle('selected',b.dataset.root===r));$('rootMenu').classList.add('hidden');$('editor').classList.add('hidden');$('editorEmpty').classList.remove('hidden');$('saveFile').disabled=true;loadDir()}
