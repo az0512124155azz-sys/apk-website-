@@ -1,0 +1,8 @@
+{
+  "name":"apk-studio-cloud",
+  "version":"1.0.0",
+  "private":true,
+  "type":"module",
+  "scripts":{"start":"node server.mjs"},
+  "dependencies":{"archiver":"^7.0.1","cors":"^2.8.5","express":"^5.1.0","fs-extra":"^11.3.2","multer":"^2.0.2"}
+}
