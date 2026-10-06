@@ -177,7 +177,7 @@ app.get('/api/selftest/start',async(req,res,next)=>{
 
         await decompile(id,{forceJadxOom:true});
         const after=await readMeta(id);
-        const fallbackPass=after.status==='ready' && after.readableAvailable===false && after.jadxWarnings===true;
+        const fallbackPass=after.status==='ready' && after.readableAvailable===true && String(after.readableMode||'').startsWith('per-dex') && after.readableDexCount>0 && after.jadxWarnings===true;
         await update({status:'tree',checks:{oomFallback:fallbackPass,decompileStatus:after.status}});
 
         if(after.status!=='ready') throw new Error('Fallback decompile did not reach ready: '+(after.error||after.status));
