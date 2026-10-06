@@ -4,7 +4,7 @@ import {java,jadxJar,apktoolJar,projectDir,writeMeta,run,walk,log} from './lib.m
 
 const shortError = (e) => String(e?.message || e || 'Unknown error').slice(-12000);
 
-export async function decompile(id){
+export async function decompile(id,{forceJadxOom=false}={}){
   const dir=projectDir(id),apk=path.join(dir,'original.apk'),readable=path.join(dir,'readable'),editable=path.join(dir,'editable');
   await fs.ensureDir(readable);
   await fs.ensureDir(editable);
@@ -16,6 +16,7 @@ export async function decompile(id){
   let jadxError=null;
 
   try{
+    if(forceJadxOom) throw new Error('java exited with 1\njava.lang.OutOfMemoryError: Java heap space (forced self-test)');
     const j=await run(id,java,[
       '-Xms64m','-Xmx352m','-XX:+UseSerialGC',
       '-cp',jadxJar,'jadx.cli.JadxCLI',
