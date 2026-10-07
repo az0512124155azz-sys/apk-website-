@@ -308,7 +308,7 @@ html,body{background:#0d1117;color:#e6edf3;margin:0}.hidden{display:none!importa
 <script>
 const CLOUD_API='/processor';
 const LOCAL_API='http://127.0.0.1:32145';
-const REQUIRED_LOCAL_AGENT_VERSION='1.2.2';
+const REQUIRED_LOCAL_AGENT_VERSION='1.3.0';
 function getCookie(name){
   const parts=document.cookie?document.cookie.split('; '):[];
   for(const part of parts){
@@ -697,7 +697,7 @@ function renderProjects(){
       <span class="project-status ${esc(p.status)}">● ${esc(p.status)}</span>
       <span class="updated">${esc(p.stage||'')}</span>
       <button class="row-action" data-delete="${p.id}">×</button>
-    </div>`).join(''):'<div class="empty-list"><strong>No projects yet</strong><span>Import an APK to create your first workspace.</span></div>';
+    </div>`).join(''):'<div class="empty-list"><strong>No projects yet</strong><span>Create an Android, Windows or Linux workspace.</span></div>';
   document.querySelectorAll('[data-open]').forEach(el=>el.onclick=()=>openProject(el.dataset.open));
   document.querySelectorAll('[data-delete]').forEach(el=>el.onclick=()=>deleteProject(el.dataset.delete));
 }
@@ -707,11 +707,11 @@ function upload(file,platformHint=''){
   if(!ok)return alert('Choose a supported Android, Windows or Linux package');
   const fd=new FormData();fd.append('apk',file);if(platformHint)fd.append('platform',platformHint);
   $('uploadBar').style.width='0%';$('cloudState').textContent='uploading 0%';$('cloudState').className='cloud-state';
-  const xhr=new XMLHttpRequest();xhr.open('POST',API+'/api/projects/upload');xhr.timeout=120000;
+  const xhr=new XMLHttpRequest();xhr.open('POST',API+'/api/projects/upload');xhr.timeout=processorMode==='local'?600000:300000;
   xhr.upload.onprogress=e=>{if(e.lengthComputable){const p=Math.round(e.loaded/e.total*100);$('uploadBar').style.width=p+'%';$('cloudState').textContent='uploading '+p+'%'}};
   xhr.onload=async()=>{if(xhr.status>=200&&xhr.status<300){let p;try{p=JSON.parse(xhr.responseText)}catch{return alert('Invalid processor response')}$('uploadBar').style.width='100%';await loadProjects();openProject(p.id)}else alert('Upload failed: '+xhr.responseText)};
   xhr.onerror=()=>alert('Upload failed: network error');
-  xhr.ontimeout=()=>alert('Upload timed out after 2 minutes. The processor did not receive the APK in time.');
+  xhr.ontimeout=()=>alert('Upload timed out. The processor did not receive the project file in time.');
   xhr.send(fd);
 }
 async function deleteProject(id){if(!confirm('Delete this project?'))return;try{await api('/api/projects/'+id,{method:'DELETE'});await loadProjects()}catch(e){alert(e.message)}}
@@ -722,6 +722,7 @@ async function openProject(id){
   selectedBuildRunId='';selectedBuildStepId='';
   const listed=projects.find(p=>p.id===id);
   activeProjectBase=listed?listed._base:'';
+  if(activeProjectBase===LOCAL_API)await ensureLocalAgentCurrent();
   current=await api('/api/projects/'+id,{timeout:45000});openedAt=Date.now();lastProgressDone=null;lastProgressChangedAt=Date.now();recoveryRequested=false;
   $('projectsView').classList.add('hidden');$('workspaceView').classList.remove('hidden');
   const name=(current.originalName||id).replace(/\.apk$/i,'');$('repoName').textContent=name;$('topRepoName').textContent=name;
@@ -1126,8 +1127,14 @@ function hideProjectTypeChooser(){$('projectTypeOverlay').classList.add('hidden'
 $('newProject').onclick=showProjectTypeChooser;
 $('mobileNewProject').onclick=showProjectTypeChooser;
 $('cancelProjectType').onclick=hideProjectTypeChooser;
-document.querySelectorAll('[data-project-platform]').forEach(b=>b.onclick=()=>{
+document.querySelectorAll('[data-project-platform]').forEach(b=>b.onclick=async()=>{
   pendingProjectPlatform=b.dataset.projectPlatform||'';
+  if(processorMode==='local'){
+    b.disabled=true;
+    const ok=await ensureLocalAgentCurrent();
+    b.disabled=false;
+    if(!ok){alert('The Local Agent must be updated before creating '+pendingProjectPlatform+' projects.');return}
+  }
   const accept=pendingProjectPlatform==='android'
     ? '.apk'
     : pendingProjectPlatform==='windows'
@@ -1145,7 +1152,7 @@ $('refreshTree').onclick=loadDir;$('saveFile').onclick=saveFile;$('editor').onin
 $('buildTop').onclick=build;$('buildPage').onclick=build;
 $('buildRunSearch').oninput=()=>renderBuildActions();
 $('buildAllRuns').onclick=()=>{document.querySelectorAll('.build-side-item').forEach(x=>x.classList.remove('active'));$('buildAllRuns').classList.add('active');$('buildRunSearch').value='';renderBuildActions()};
-$('buildWorkflow').onclick=()=>{document.querySelectorAll('.build-side-item').forEach(x=>x.classList.remove('active'));$('buildWorkflow').classList.add('active');$('buildRunSearch').value='Build APK';renderBuildActions()};
+$('buildWorkflow').onclick=()=>{document.querySelectorAll('.build-side-item').forEach(x=>x.classList.remove('active'));$('buildWorkflow').classList.add('active');$('buildRunSearch').value=current?.platform==='windows'?'Build Windows':current?.platform==='linux'?'Build Linux':'Build APK';renderBuildActions()};
 $('buildSigningNav').onclick=()=>{document.querySelectorAll('.build-side-item').forEach(x=>x.classList.remove('active'));$('buildSigningNav').classList.add('active');$('signingForm').classList.remove('hidden');$('configureSigning').scrollIntoView({behavior:'smooth',block:'center'})};
 $('configureSigning').onclick=()=>$('signingForm').classList.remove('hidden');
 $('cancelSigning').onclick=()=>$('signingForm').classList.add('hidden');
