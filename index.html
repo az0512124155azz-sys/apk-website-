@@ -1232,6 +1232,17 @@ function setClientPrepareRun(status,message){
   buildRunTab='job';
   buildManagementMode='runs';
   renderProject();
+  requestAnimationFrame(()=>{
+    const el=$('step-log-prepare-engine');
+    if(!el)return;
+    const key=(selectedBuildRunId||clientPrepareRunId)+'::prepare-engine';
+    const state=stepLogScrollState.get(key);
+    const follow=state?state.follow:true;
+    if(follow){
+      el.scrollTop=el.scrollHeight;
+      stepLogScrollState.set(key,{follow:true,scrollTop:el.scrollTop});
+    }
+  });
 }
 function removeClientPrepareRun(){
   if(!current||!clientPrepareRunId)return;
