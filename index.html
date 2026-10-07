@@ -373,7 +373,7 @@ html,body{background:#0d1117;color:#e6edf3;margin:0}.hidden{display:none!importa
 <script>
 const CLOUD_API='/processor';
 const LOCAL_API='http://127.0.0.1:32145';
-const REQUIRED_LOCAL_AGENT_VERSION='1.3.1';
+const REQUIRED_LOCAL_AGENT_VERSION='1.3.2';
 function getCookie(name){
   const parts=document.cookie?document.cookie.split('; '):[];
   for(const part of parts){
@@ -945,7 +945,7 @@ function renderSigningManagement(){
   badge.className='signing-connected-badge '+(ready?'connected':error?'error':'waiting');
   $('signingKeyTitle').textContent=automatic?'APK Studio automatic key':signingInfo.configured?'Original signing key':'APK Studio automatic key';
   $('signingKeyMeta').textContent=ready
-    ? (automatic?'Project key is connected, stored locally and ready for every build.':'Original keystore is connected to this project.')
+    ? (automatic?'Project key is connected and stored locally. If the original app is already installed with a different signature, uninstall it first or connect the original signing key.':'Original keystore is connected to this project.')
     : error
       ? error
       : 'APK Studio is preparing a project signing key. Build remains locked until it is ready.';
@@ -1121,8 +1121,77 @@ async function openFile(path){
   }catch(e){alert(e.message)}
 }
 async function saveFile(){if(!selected||root!=='editable')return;const q=new URLSearchParams({root,path:selected});try{await api('/api/projects/'+current.id+'/file?'+q,{method:'PUT',headers:{'content-type':'application/json'},body:JSON.stringify({content:$('editor').value}),timeout:30000});saved=$('editor').value;$('dirtyState').textContent='';$('saveFile').disabled=true}catch(e){alert(e.message)}}
+async function ensureModernLocalBuildAgent(){
+  if(activeProjectBase!==LOCAL_API)return true;
+
+  const readHealth=async(timeout=1200)=>{
+    const controller=new AbortController();
+    const timer=setTimeout(()=>controller.abort(),timeout);
+    try{
+      const r=await fetch(LOCAL_API+'/health',{cache:'no-store',signal:controller.signal});
+      const d=await r.json().catch(()=>null);
+      return r.ok&&d?.ok?d:null;
+    }catch{return null}
+    finally{clearTimeout(timer)}
+  };
+
+  let health=await readHealth();
+  if(!health)return false;
+  localAgentVersion=health.version||'0';
+  if(!versionLt(localAgentVersion,'1.3.2'))return true;
+
+  if(localUpdatePromise)return localUpdatePromise;
+  localUpdatePromise=(async()=>{
+    try{
+      $('cloudState').textContent='● updating Android build engine…';
+      $('cloudState').className='cloud-state';
+      $('buildTop').disabled=true;
+      $('buildPage').disabled=true;
+
+      for(let attempt=0;attempt<2;attempt++){
+        try{
+          const controller=new AbortController();
+          const timer=setTimeout(()=>controller.abort(),8000);
+          try{
+            await fetch(LOCAL_API+'/api/local/update',{method:'POST',cache:'no-store',signal:controller.signal});
+          }finally{clearTimeout(timer)}
+        }catch{}
+
+        for(let i=0;i<160;i++){
+          await new Promise(r=>setTimeout(r,750));
+          health=await readHealth(1000);
+          if(health){
+            localAgentVersion=health.version||'0';
+            if(!versionLt(localAgentVersion,'1.3.2')){
+              $('cloudState').textContent='● local processor online';
+              $('cloudState').className='cloud-state ok';
+              return true;
+            }
+          }
+        }
+      }
+
+      $('cloudState').textContent='● local build engine update failed';
+      $('cloudState').className='cloud-state bad';
+      return false;
+    }finally{
+      localUpdatePromise=null;
+      if(current)renderProject();
+    }
+  })();
+
+  return localUpdatePromise;
+}
+
 async function build(){
   if(!current)return;
+  if((current.platform||'android')==='android' && activeProjectBase===LOCAL_API){
+    const modern=await ensureModernLocalBuildAgent();
+    if(!modern){
+      alert('APK Studio could not update the local Android build engine to the version that uses zipalign + apksigner. The old build is intentionally blocked because it can produce APKs that Android refuses to install.');
+      return;
+    }
+  }
   if((current.platform||'android')==='android' && !(signingInfo.configured||signingInfo.automaticReady)){
     switchSection('build');
     const ready=await ensureProjectSigningReady({force:true});
