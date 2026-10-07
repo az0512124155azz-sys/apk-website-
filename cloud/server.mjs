@@ -534,8 +534,14 @@ app.get('/api/github/config',(_req,res)=>res.json({oauth:!!(githubClientId&&gith
 
 app.get('/api/github/oauth/start',(req,res)=>{
   if(!githubClientId||!githubClientSecret) return res.status(501).json({error:'GitHub OAuth is not configured on the server'});
-  const state=seal(JSON.stringify({createdAt:Date.now(),returnTo:String(req.query.returnTo||publicOrigin)}));
-  res.cookie?.('noop','');
+  const requested=String(req.query.returnTo||publicOrigin);
+  let returnTo=publicOrigin;
+  try{
+    const u=new URL(requested);
+    const allowed=new URL(publicOrigin);
+    if(u.origin===allowed.origin)returnTo=u.origin+u.pathname;
+  }catch{}
+  const state=seal(JSON.stringify({createdAt:Date.now(),returnTo}));
   res.redirect('https://github.com/login/oauth/authorize?client_id='+encodeURIComponent(githubClientId)+'&scope=repo%20read:user&state='+encodeURIComponent(state));
 });
 
@@ -543,10 +549,18 @@ app.get('/api/github/oauth/callback',async(req,res,next)=>{
   try{
     if(!githubClientId||!githubClientSecret) throw new Error('GitHub OAuth is not configured');
     const code=String(req.query.code||''); if(!code) throw new Error('Missing GitHub OAuth code');
+    let returnTo=publicOrigin;
+    const stateRaw=unseal(String(req.query.state||''));
+    if(stateRaw){
+      try{
+        const st=JSON.parse(stateRaw);
+        if(st.returnTo&&Date.now()-Number(st.createdAt||0)<10*60*1000)returnTo=st.returnTo;
+      }catch{}
+    }
     const r=await fetch('https://github.com/login/oauth/access_token',{method:'POST',headers:{'Accept':'application/json','Content-Type':'application/json'},body:JSON.stringify({client_id:githubClientId,client_secret:githubClientSecret,code})});
     const d=await r.json(); if(!d.access_token) throw new Error(d.error_description||d.error||'GitHub OAuth failed');
-    const handoff=seal(JSON.stringify({token:d.access_token,expires:Date.now()+60000}));
-    res.redirect(publicOrigin+'/?github_handoff='+encodeURIComponent(handoff));
+    const handoff=seal(JSON.stringify({token:d.access_token,expires:Date.now()+5*60*1000}));
+    res.redirect(returnTo+(returnTo.includes('?')?'&':'?')+'github_handoff='+encodeURIComponent(handoff));
   }catch(e){next(e);}
 });
 
