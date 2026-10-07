@@ -8,8 +8,8 @@ import {startRun,finishRun,setStep,appendStepLog,stepLogFile} from './workflows.
 
 const shortError = (e) => String(e?.message || e || 'Unknown error').slice(-12000);
 const localMode = process.env.LOCAL_PROCESSOR === '1';
-const javaXmx = process.env.APK_STUDIO_JAVA_XMX || (localMode ? '4096m' : '352m');
-const javaXms = process.env.APK_STUDIO_JAVA_XMS || (localMode ? '256m' : '64m');
+const javaXmx = process.env.APK_STUDIO_JAVA_XMX || (localMode ? '4096m' : '384m');
+const javaXms = process.env.APK_STUDIO_JAVA_XMS || (localMode ? '256m' : '96m');
 const autoThreads = localMode ? Math.max(2,Math.min(8,os.cpus()?.length||4)) : 1;
 const workerThreads = String(Number(process.env.APK_STUDIO_THREADS || autoThreads));
 const javaBinDir = path.dirname(java);
@@ -279,7 +279,7 @@ export async function rebuild(id,{runId}={}){
 
   if(runId)await startRun(id,runId);
   await log(id,'=== BUILD START ===');
-  await stepStart('preflight',`Build resources: heap=${javaXmx}, threads=${workerThreads}, local=${localMode}`);
+  await stepStart('preflight',`Build resources: heap=${javaXmx}, threads=${workerThreads}, local=${localMode}, cache=${meta.buildRevision===meta.editableRevision?'candidate':'cold'}`);
 
   if(sameRevision && sameSigning && modernSigningCache && await fs.pathExists(signedArtifact)){
     await stepDone('preflight','Workspace and signing configuration are unchanged.');
@@ -312,7 +312,7 @@ export async function rebuild(id,{runId}={}){
       await run(id,java,[
         '-Xms'+javaXms,'-Xmx'+javaXmx,'-XX:+UseSerialGC',
         '-jar',apktoolJar,'b','-j',workerThreads,editable,'-o',artifact
-      ],[0],{idleTimeoutMs:180000,timeoutMs:1200000,logFile:runId?stepLogFile(id,runId,'compile'):undefined});
+      ],[0],{timeoutMs:1800000,logFile:runId?stepLogFile(id,runId,'compile'):undefined});
       await stepDone('compile','APK compilation completed.');
     }else{
       await stepSkip('compile','Source unchanged. Reusing unsigned APK from the previous build.');
