@@ -924,8 +924,8 @@ function runDuration(run){
 }
 function signingLabel(){
   if((current?.platform||'android')!=='android')return current?.platform||'package';
+  if(isManagedAutomaticKey(signingInfo))return 'APK Studio key connected';
   if(signingInfo.configured)return 'Original key connected';
-  if(signingInfo.automaticReady)return 'APK Studio key connected';
   return 'Signing key not connected';
 }
 function setRunTab(tab){
@@ -937,14 +937,15 @@ function setRunTab(tab){
 }
 function renderSigningManagement(){
   if((current?.platform||'android')!=='android')return;
-  const ready=!!(signingInfo.configured||signingInfo.automaticReady);
+  const ready=isSigningConnected(signingInfo);
+  const automatic=isManagedAutomaticKey(signingInfo);
   const error=String(signingInfo.error||'');
   const badge=$('signingConnectedBadge');
   badge.textContent=ready?'Connected':error?'Not connected':'Preparing';
   badge.className='signing-connected-badge '+(ready?'connected':error?'error':'waiting');
-  $('signingKeyTitle').textContent=signingInfo.configured?'Original signing key':'APK Studio automatic key';
+  $('signingKeyTitle').textContent=automatic?'APK Studio automatic key':signingInfo.configured?'Original signing key':'APK Studio automatic key';
   $('signingKeyMeta').textContent=ready
-    ? (signingInfo.configured?'Original keystore is connected to this project.':'Project key is created, stored and ready for every build.')
+    ? (automatic?'Project key is connected, stored locally and ready for every build.':'Original keystore is connected to this project.')
     : error
       ? error
       : 'APK Studio is preparing a project signing key. Build remains locked until it is ready.';
@@ -1085,7 +1086,7 @@ function renderProject(){
   $('repoStatus').textContent='● '+current.status;$('repoStatus').className='project-status '+current.status;
   const ready=current.status==='ready';
   const platform=current.platform||'android';
-  const signingReady=platform!=='android'||!!(signingInfo.configured||signingInfo.automaticReady);
+  const signingReady=platform!=='android'||isSigningConnected(signingInfo);
   const buildSupported=current.buildSupported!==false;
   $('buildTop').disabled=!ready||!signingReady||!buildSupported||current.buildStatus==='building';
   $('buildPage').disabled=!ready||!signingReady||!buildSupported||current.buildStatus==='building';
@@ -1130,7 +1131,7 @@ async function build(){
       return;
     }
   }
-  const signingReady=(current.platform||'android')!=='android'||!!(signingInfo.configured||signingInfo.automaticReady);
+  const signingReady=(current.platform||'android')!=='android'||isSigningConnected(signingInfo);
   if(!signingReady){
     switchSection('build');
     alert('APK Studio is still preparing the signing key. Build will unlock automatically when the key is ready.');
@@ -1221,29 +1222,101 @@ async function ensureLocalSigningAgentVersion(){
   return localUpdatePromise;
 }
 
+function isManagedAutomaticKey(state=signingInfo){
+  const file=String(state?.fileName||'');
+  return !!state?.automaticReady || state?.keySource==='automatic' || /^apkstudio-automatic(?:[.-]|$)/i.test(file);
+}
+function isSigningConnected(state=signingInfo){
+  return !!(state?.connected||state?.configured||state?.automaticReady);
+}
+async function createCloudAutomaticSigningKey(){
+  const r=await fetch(CLOUD_API+'/api/signing/bootstrap',{method:'POST',cache:'no-store'});
+  const text=await r.text();
+  let data;try{data=JSON.parse(text)}catch{data={raw:text}}
+  if(!r.ok)throw new Error(data.error||data.raw||('Automatic key service HTTP '+r.status));
+  if(!data?.data||!data?.storePass||!data?.alias)throw new Error('Automatic key service returned an incomplete key.');
+
+  const raw=atob(data.data);
+  const bytes=new Uint8Array(raw.length);
+  for(let i=0;i<raw.length;i++)bytes[i]=raw.charCodeAt(i);
+  return {
+    blob:new Blob([bytes],{type:'application/octet-stream'}),
+    fileName:data.fileName||'apkstudio-automatic.jks',
+    alias:data.alias,
+    storePass:data.storePass,
+    keyPass:data.keyPass||data.storePass
+  };
+}
+async function installAutomaticKeyIntoLocalProject(projectId){
+  const generated=await createCloudAutomaticSigningKey();
+  const fd=new FormData();
+  fd.append('keystore',generated.blob,generated.fileName);
+  fd.append('alias',generated.alias);
+  fd.append('storePass',generated.storePass);
+  fd.append('keyPass',generated.keyPass);
+  await api('/api/projects/'+projectId+'/signing',{method:'POST',body:fd,timeout:60000});
+  const state=await api('/api/projects/'+projectId+'/signing',{timeout:15000});
+  if(!isSigningConnected(state))throw new Error('The Local Agent received the APK Studio key but did not report it as connected.');
+  state.keySource='automatic';
+  state.automaticReady=true;
+  return state;
+}
+
 async function ensureProjectSigningReady({force=false}={}){
   if(!current||(current.platform||'android')!=='android')return true;
   if(current.status!=='ready')return false;
-  if(!force&&(signingInfo.configured||signingInfo.automaticReady))return true;
+  if(!force&&isSigningConnected(signingInfo))return true;
   if(signingPreparePromise)return signingPreparePromise;
 
   const projectId=current.id;
   signingPreparePromise=(async()=>{
     try{
+      let state=null;
+      try{
+        state=await api('/api/projects/'+projectId+'/signing',{timeout:20000});
+      }catch{}
+
+      if(isSigningConnected(state)){
+        signingInfo=state;
+        signingPreparedProjectId=projectId;
+        return true;
+      }
+
+      $('signingStatus').textContent='Automatic · creating APK Studio signing key…';
+      renderSigningManagement();
+
       if(activeProjectBase===LOCAL_API){
-        const compatible=await ensureLocalSigningAgentVersion();
-        if(!compatible){
-          throw new Error('Local Agent 1.3.1 is required for automatic signing. APK Studio could not complete the one-time update.');
+        // Prefer native local key creation when the installed Agent supports it.
+        try{
+          await api('/api/projects/'+projectId+'/signing/prepare',{method:'POST',timeout:90000});
+          state=await api('/api/projects/'+projectId+'/signing',{timeout:15000});
+        }catch{}
+
+        // Older Local Agents already support custom keystore upload even when
+        // they do not support automatic key preparation. Bootstrap a fresh
+        // APK Studio key in the cloud and install it locally without restart.
+        if(!isSigningConnected(state)){
+          $('signingStatus').textContent='Automatic · connecting APK Studio key…';
+          state=await installAutomaticKeyIntoLocalProject(projectId);
+        }
+      }else{
+        // Current cloud processor self-heals on GET; prepare is a fallback.
+        if(!isSigningConnected(state)){
+          try{
+            await api('/api/projects/'+projectId+'/signing/prepare',{method:'POST',timeout:90000});
+          }catch{}
+          state=await api('/api/projects/'+projectId+'/signing',{timeout:20000});
         }
       }
 
-      // On 1.3.1+ the GET endpoint self-heals: if the project is ready and
-      // no key exists yet, the processor creates and verifies it itself.
-      const state=await api('/api/projects/'+projectId+'/signing',{timeout:120000});
-      if(!(state.configured||state.automaticReady||state.connected)){
-        throw new Error(state.error||'The processor did not connect an automatic signing key.');
+      if(!isSigningConnected(state)){
+        throw new Error(state?.error||'APK Studio could not connect an automatic signing key.');
       }
 
+      if(isManagedAutomaticKey(state)){
+        state.keySource='automatic';
+        state.automaticReady=true;
+      }
       signingInfo=state;
       signingPreparedProjectId=projectId;
       if(current?.id===projectId){
@@ -1253,13 +1326,11 @@ async function ensureProjectSigningReady({force=false}={}){
       return true;
     }catch(e){
       const raw=String(e?.message||e||'Unknown signing error');
-      const msg=/Cannot (GET|POST) \/api\/projects/i.test(raw)
-        ? 'The Local Agent is outdated and does not support automatic signing yet.'
-        : raw.replace(/<[^>]+>/g,' ').replace(/\s+/g,' ').trim();
-      signingInfo={mode:'apkstudio',configured:false,automaticReady:false,error:msg.slice(0,240)};
+      const msg=raw.replace(/<[^>]+>/g,' ').replace(/\s+/g,' ').trim().slice(0,240);
+      signingInfo={mode:'apkstudio',configured:false,automaticReady:false,error:msg};
       if(current?.id===projectId){
         current.signingReady=false;
-        current.signingError=signingInfo.error;
+        current.signingError=msg;
       }
       return false;
     }finally{
@@ -1288,15 +1359,16 @@ async function loadSigningStatus(){
 
   try{
     signingInfo=await api('/api/projects/'+current.id+'/signing',{timeout:15000});
-    if(current.status==='ready' && !(signingInfo.configured||signingInfo.automaticReady)){
+    if(current.status==='ready' && !isSigningConnected(signingInfo)){
       await ensureProjectSigningReady();
     }
 
-    const ready=!!(signingInfo.configured||signingInfo.automaticReady);
+    const ready=isSigningConnected(signingInfo);
+    const automatic=isManagedAutomaticKey(signingInfo);
     $('signingStatus').textContent=ready
-      ? (signingInfo.configured?'Automatic ✅ · Original key':'Automatic ✅ · APK Studio key connected')
+      ? (automatic?'Automatic ✅ · APK Studio key connected':'Automatic ✅ · Original key')
       : 'Automatic · preparing APK Studio key…';
-    $('removeSigning').classList.toggle('hidden',!signingInfo.configured);
+    $('removeSigning').classList.toggle('hidden',!signingInfo.configured||automatic);
     $('configureSigning').textContent='Advanced';
     renderSigningManagement();
     renderProject();
