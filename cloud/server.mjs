@@ -22,7 +22,7 @@ const githubClientId=process.env.GITHUB_CLIENT_ID||'';
 const githubClientSecret=process.env.GITHUB_CLIENT_SECRET||'';
 const publicOrigin=process.env.PUBLIC_ORIGIN||'https://apk-website-sable.vercel.app';
 const cloudRoot=path.dirname(fileURLToPath(import.meta.url));
-const AGENT_VERSION='1.3.1';
+const AGENT_VERSION='1.3.2';
 app.use(cors({origin:true}));
 app.use((req,_res,next)=>{ console.log(new Date().toISOString(), req.method, req.url); next(); });
 app.use(express.json({limit:'10mb'}));
