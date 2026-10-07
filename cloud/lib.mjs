@@ -18,7 +18,9 @@ export async function log(id,msg){const s=new Date().toISOString().slice(11,19);
 export async function run(id,cmd,args,accepted=[0],options={}){
   const secretFlags=new Set(['-storepass','-keypass','--storepass','--keypass']);
   const safeArgs=args.map((x,i)=>secretFlags.has(String(args[i-1]||''))?'***':x);
-  await log(id,`$ ${cmd} ${safeArgs.map(x=>JSON.stringify(x)).join(' ')}`);
+  const commandLine=`$ ${cmd} ${safeArgs.map(x=>JSON.stringify(x)).join(' ')}`;
+  await log(id,commandLine);
+  if(options.logFile){await fs.ensureDir(path.dirname(options.logFile));await fs.appendFile(options.logFile,commandLine+'\n')}
   return new Promise((resolve,reject)=>{
     const p=spawn(cmd,args,{shell:false});
     let out='',err='',settled=false,idleTimer=null,totalTimer=null;
@@ -40,8 +42,8 @@ export async function run(id,cmd,args,accepted=[0],options={}){
       },options.timeoutMs);
     }
     armIdle();
-    p.stdout.on('data',async d=>{armIdle();const s=d.toString();out+=s;await log(id,s.trimEnd());});
-    p.stderr.on('data',async d=>{armIdle();const s=d.toString();err+=s;await log(id,s.trimEnd());});
+    p.stdout.on('data',async d=>{armIdle();const s=d.toString();out+=s;await log(id,s.trimEnd());if(options.logFile)await fs.appendFile(options.logFile,s)});
+    p.stderr.on('data',async d=>{armIdle();const s=d.toString();err+=s;await log(id,s.trimEnd());if(options.logFile)await fs.appendFile(options.logFile,s)});
     p.on('error',e=>finish(reject,e));
     p.on('close',code=>accepted.includes(code)?finish(resolve,{code,out,err}):finish(reject,new Error(`${path.basename(cmd)} exited with ${code}\n${(err||out).slice(-12000)}`)));
   });
