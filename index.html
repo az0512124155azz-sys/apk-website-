@@ -212,6 +212,7 @@ let projects=[],current=null,root='editable',dir='',selected='',saved='',pollTim
 let lastProgressDone=null,lastProgressChangedAt=0,recoveryRequested=false;
 let githubSession={connected:false,user:null},githubProjects=[];
 let signingInfo={mode:'apkstudio',configured:false};
+let signingAutoFindProject='';
 
 const rootMeta={
  editable:{title:'Rebuildable APK',hint:'Manifest, resources and Smali'},
@@ -493,7 +494,7 @@ function upload(file){
 }
 async function deleteProject(id){if(!confirm('Delete this project?'))return;try{await api('/api/projects/'+id,{method:'DELETE'});await loadProjects()}catch(e){alert(e.message)}}
 
-async function openProject(id){
+async function openProject(id){signingAutoFindProject='';
   clearInterval(pollTimer);current=await api('/api/projects/'+id,{timeout:45000});openedAt=Date.now();lastProgressDone=null;lastProgressChangedAt=Date.now();recoveryRequested=false;
   $('projectsView').classList.add('hidden');$('workspaceView').classList.remove('hidden');
   const name=(current.originalName||id).replace(/\.apk$/i,'');$('repoName').textContent=name;$('topRepoName').textContent=name;
@@ -601,7 +602,17 @@ async function loadSigningStatus(){
   if(!current)return;
   try{
     signingInfo=await api('/api/projects/'+current.id+'/signing',{timeout:15000});
-    $('signingStatus').textContent=signingInfo.configured?'Automatic ✅ · Original key':'Automatic ✅ · APK Studio key';
+    if(!signingInfo.configured && processorMode==='local' && signingAutoFindProject!==current.id){
+      signingAutoFindProject=current.id;
+      $('signingStatus').textContent='Automatic · searching for original key…';
+      try{
+        const found=await api('/api/projects/'+current.id+'/signing/auto-find',{method:'POST',timeout:45000});
+        if(found.found) signingInfo=await api('/api/projects/'+current.id+'/signing',{timeout:15000});
+      }catch{}
+    }
+    $('signingStatus').textContent=signingInfo.configured
+      ? (signingInfo.autoFound?'Automatic ✅ · Original key found':'Automatic ✅ · Original key')
+      : 'Automatic ✅ · APK Studio key';
     $('removeSigning').classList.toggle('hidden',!signingInfo.configured);
     $('configureSigning').textContent='Advanced';
   }catch(e){}
