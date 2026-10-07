@@ -385,37 +385,67 @@ function versionLt(a,b){
   return false;
 }
 let localAgentVersion='';
+let localUpdatePromise=null;
+let localUpdateFailedAt=0;
 async function ensureLocalAgentCurrent(){
   const localProject=activeProjectBase===LOCAL_API;
   if(processorMode!=='local'&&!localProject)return true;
-  try{
-    const r=await fetch(LOCAL_API+'/health',{cache:'no-store'});
-    const d=await r.json();
-    localAgentVersion=d.version||'0';
-    if(!versionLt(localAgentVersion,REQUIRED_LOCAL_AGENT_VERSION))return true;
+  if(localUpdatePromise)return localUpdatePromise;
+  if(localUpdateFailedAt&&Date.now()-localUpdateFailedAt<30000)return false;
 
-    $('cloudState').textContent='● updating local processor…';$('cloudState').className='cloud-state';
+  localUpdatePromise=(async()=>{
     try{
-      const u=await fetch(LOCAL_API+'/api/local/update',{method:'POST',cache:'no-store'});
-      if(u.ok){
-        for(let i=0;i<60;i++){
-          await new Promise(r=>setTimeout(r,1500));
-          try{
-            const hr=await fetch(LOCAL_API+'/health',{cache:'no-store'});
-            const hd=await hr.json();
-            if(hr.ok&&!versionLt(hd.version,REQUIRED_LOCAL_AGENT_VERSION)){
-              localAgentVersion=hd.version;
-              $('cloudState').textContent='● local processor online';$('cloudState').className='cloud-state ok';
+      const r=await fetch(LOCAL_API+'/health',{cache:'no-store'});
+      const d=await r.json();
+      localAgentVersion=d.version||'0';
+      if(!versionLt(localAgentVersion,REQUIRED_LOCAL_AGENT_VERSION))return true;
+
+      $('cloudState').textContent='● updating local processor…';
+      $('cloudState').className='cloud-state';
+
+      let updateStarted=false;
+      try{
+        const u=await fetch(LOCAL_API+'/api/local/update',{method:'POST',cache:'no-store'});
+        updateStarted=u.ok;
+      }catch{}
+
+      if(!updateStarted){
+        localUpdateFailedAt=Date.now();
+        $('cloudState').textContent='● local processor update failed';
+        $('cloudState').className='cloud-state bad';
+        return false;
+      }
+
+      let sawDisconnect=false;
+      for(let i=0;i<80;i++){
+        await new Promise(r=>setTimeout(r,1000));
+        try{
+          const hr=await fetch(LOCAL_API+'/health',{cache:'no-store'});
+          const hd=await hr.json();
+          if(hr.ok){
+            localAgentVersion=hd.version||'0';
+            if(!versionLt(localAgentVersion,REQUIRED_LOCAL_AGENT_VERSION)){
+              $('cloudState').textContent='● local processor online';
+              $('cloudState').className='cloud-state ok';
+              localUpdateFailedAt=0;
               return true;
             }
-          }catch{}
-        }
+          }
+        }catch{sawDisconnect=true}
       }
-    }catch{}
 
-    $('cloudState').textContent='● local processor update required';$('cloudState').className='cloud-state bad';
-    return false;
-  }catch{return false}
+      localUpdateFailedAt=Date.now();
+      $('cloudState').textContent=sawDisconnect?'● local processor did not return':'● local processor update failed';
+      $('cloudState').className='cloud-state bad';
+      return false;
+    }catch{
+      localUpdateFailedAt=Date.now();
+      return false;
+    }
+  })();
+
+  try{return await localUpdatePromise}
+  finally{localUpdatePromise=null}
 }
 async function probeLocalAgent(timeout=1800){
   const controller=new AbortController();const timer=setTimeout(()=>controller.abort(),timeout);
@@ -723,7 +753,13 @@ async function openProject(id){
   selectedBuildRunId='';selectedBuildStepId='';buildDetailMode=false;
   const listed=projects.find(p=>p.id===id);
   activeProjectBase=listed?listed._base:'';
-  if(activeProjectBase===LOCAL_API)await ensureLocalAgentCurrent();
+  if(activeProjectBase===LOCAL_API){
+    const updated=await ensureLocalAgentCurrent();
+    if(!updated){
+      alert('The local processor update did not finish. APK Studio stopped instead of restarting the server again. Use Retry Local Agent once and try again.');
+      return;
+    }
+  }
   current=await api('/api/projects/'+id,{timeout:45000});openedAt=Date.now();lastProgressDone=null;lastProgressChangedAt=Date.now();recoveryRequested=false;
   $('projectsView').classList.add('hidden');$('workspaceView').classList.remove('hidden');
   const name=(current.originalName||id).replace(/\.apk$/i,'');$('repoName').textContent=name;$('topRepoName').textContent=name;
@@ -1188,7 +1224,7 @@ window.addEventListener('keydown',e=>{if((e.ctrlKey||e.metaKey)&&e.key.toLowerCa
   renderProcessorMode();
   startLocalReconnectWatcher();
   await checkProcessor();
-  if(processorMode==='local')ensureLocalAgentCurrent().catch(()=>{});
+  if(processorMode==='local'&&!localUpdatePromise)ensureLocalAgentCurrent().catch(()=>{});
   await loadProjects();
 })();
 </script>
