@@ -44,7 +44,7 @@ async function resolveSevenZipExecutable(){
   }
   throw new Error('No executable 7-Zip binary is available on this builder.');
 }
-const AGENT_VERSION='1.3.2';
+const AGENT_VERSION='1.3.3';
 app.use(cors({origin:true}));
 app.use((req,_res,next)=>{ console.log(new Date().toISOString(), req.method, req.url); next(); });
 app.use(express.json({limit:'10mb'}));
