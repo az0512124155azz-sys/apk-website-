@@ -532,6 +532,7 @@ app.get('/api/projects/:id/build-runs/:runId/steps/:stepId/log',async(req,res,ne
 app.post('/api/projects/:id/build',async(req,res,next)=>{
   try{
     const meta=await ensureProjectAvailable(req,req.params.id);
+    if(meta.status!=='ready')return res.status(409).json({error:'Project processing must finish before a build can start.'});
     if(meta.buildStatus==='building')return res.status(202).json({ok:true,alreadyBuilding:true,stage:meta.buildStage||'building'});
     const platform=meta.platform||'android';
     if(platform==='android'){
