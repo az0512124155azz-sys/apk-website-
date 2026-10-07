@@ -15,7 +15,7 @@ import {detectPlatform,detectFormat,storedOriginalName,inspectPackage,rebuildPac
 await init();
 const app=express();
 const port=Number(process.env.PORT||10000);
-const maxMb=Number(process.env.MAX_APK_MB||150);
+const maxMb=Number(process.env.MAX_APK_MB||(process.env.LOCAL_PROCESSOR==='1'?1024:250));
 const sessionSecret=process.env.SESSION_SECRET||'apk-studio-dev-secret-change-me';
 const githubClientId=process.env.GITHUB_CLIENT_ID||'';
 const githubClientSecret=process.env.GITHUB_CLIENT_SECRET||'';
@@ -97,7 +97,7 @@ async function requireGithub(req){
   return token;
 }
 function cleanRepoName(name){
-  return String(name||'apk-studio-project').replace(/\.apk$/i,'').replace(/[^A-Za-z0-9._-]+/g,'-').replace(/^-+|-+$/g,'').slice(0,80)||'apk-studio-project';
+  return String(name||'apk-studio-project').replace(/\.(apk|exe|msi|msix|appx|appimage|deb|rpm|elf|zip|tar|tgz|txz)$/i,'').replace(/[^A-Za-z0-9._-]+/g,'-').replace(/^-+|-+$/g,'').slice(0,80)||'apk-studio-project';
 }
 async function killProjectJava(id){
   return new Promise(resolve=>{
@@ -228,7 +228,8 @@ async function streamVsCodeZip(id,res,next){
   try{
     const dir=projectDir(id),editable=path.join(dir,'editable'),readable=path.join(dir,'readable');
     if(!await fs.pathExists(editable)) return res.status(409).json({error:'Project is not ready yet'});
-    const workspace={folders:[{name:'Rebuildable APK',path:'rebuildable'},...((await fs.pathExists(readable))?[{name:'Readable Source',path:'readable'}]:[])],settings:{'files.exclude':{'**/.DS_Store':true},'editor.tabSize':2}};
+    const meta=await readMeta(id);
+    const workspace={folders:[{name:(meta.platform||'android')==='android'?'Rebuildable APK':'Editable Package',path:'rebuildable'},...((await fs.pathExists(readable))?[{name:(meta.platform||'android')==='android'?'Readable Source':'Readable Analysis',path:'readable'}]:[])],settings:{'files.exclude':{'**/.DS_Store':true},'editor.tabSize':2}};
     res.attachment('apk-studio-vscode.zip');
     const a=archiver('zip',{zlib:{level:6}});a.on('error',next);a.pipe(res);
     a.directory(editable,'rebuildable');if(await fs.pathExists(readable))a.directory(readable,'readable');
@@ -289,11 +290,11 @@ async function ensureProjectAvailable(req,id){
   const dir=projectDir(id),metaFile=path.join(dir,'project.json');
   if(await fs.pathExists(metaFile))return readMeta(id);
   const token=githubToken(req);
-  if(!token){const e=new Error('Project workspace expired after a processor restart. Re-upload the APK or reconnect GitHub to restore synced projects.');e.status=410;throw e}
+  if(!token){const e=new Error('Project workspace expired after a processor restart. Re-upload the project file or reconnect GitHub to restore synced projects.');e.status=410;throw e}
   const user=await getGithubUser(token),repoName=autoRepoName(id);
   let repoInfo;
   try{repoInfo=await gh(token,`/repos/${user.login}/${repoName}`)}
-  catch(e){const err=new Error('Project workspace expired and no GitHub backup was found. Please upload the APK again once; future connected projects are backed up automatically.');err.status=410;throw err}
+  catch(e){const err=new Error('Project workspace expired and no GitHub backup was found. Please upload the project file again once; future connected projects are backed up automatically.');err.status=410;throw err}
   await fs.ensureDir(dir);
   const clone=path.join(dir,'restore');
   await gitRun(dir,['clone','--depth','1',repoInfo.clone_url,clone],token);
