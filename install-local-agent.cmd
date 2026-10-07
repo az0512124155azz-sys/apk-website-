@@ -11,6 +11,12 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass -File "%SCRIPT%"
 set "ERR=%ERRORLEVEL%"
 del "%SCRIPT%" >nul 2>&1
 if not "%ERR%"=="0" (
+  curl.exe -s --max-time 3 http://127.0.0.1:32145/health | findstr /i "\"ok\":true" >nul
+  if not errorlevel 1 (
+    echo.
+    echo APK Studio Local Agent is already running and healthy.
+    exit /b 0
+  )
   echo.
   echo APK Studio Local Agent installation failed.
   echo Check %%LOCALAPPDATA%%\APKStudioLocal\install.log
