@@ -405,7 +405,8 @@ app.get('/api/projects/:id/signing',async(req,res,next)=>{
       mode:cfg?'custom':'apkstudio',
       configured:!!cfg,
       alias:cfg?.alias||null,
-      fileName:cfg?.fileName||null
+      fileName:cfg?.fileName||null,
+      autoFound:!!cfg?.autoFound
     });
   }catch(e){next(e);}
 });
