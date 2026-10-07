@@ -108,7 +108,6 @@ set NODE_ENV=production
 set LOCAL_PROCESSOR=1
 set APK_STUDIO_JAVA_XMS=256m
 set APK_STUDIO_JAVA_XMX=4096m
-set APK_STUDIO_THREADS=4
 cd /d "$cloud"
 "$nodeExeEsc" server.mjs >> "$installDir\agent.log" 2>&1
 "@
