@@ -742,7 +742,35 @@ app.post('/api/remote-build',remoteWorkspaceUpload.single('workspace'),async(req
   try{
     if(!req.file)throw new Error('Workspace ZIP is required');
 
-    const requestedId=String(req.body?.projectId||'');
+    let requestedId=String(req.body?.projectId||'');
+    let incomingRevision=String(req.body?.editableRevision||'');
+
+    // Older frontends do not send projectId/editableRevision fields. Read the
+    // tiny project.json directly from the uploaded ZIP so cache identity still
+    // works without waiting for a new frontend deployment.
+    if(!/^[0-9a-f-]{16,64}$/i.test(requestedId) || !incomingRevision){
+      const metaStage=path.join(os.tmpdir(),'apk-studio-remote-meta-'+crypto.randomUUID());
+      await fs.ensureDir(metaStage);
+      try{
+        const sevenZipExec=await resolveSevenZipExecutable();
+        await new Promise((resolve,reject)=>{
+          const p=spawn(sevenZipExec,['e','-y',uploadPath,'project.json','-o'+metaStage],{shell:false});
+          let out='',err='';
+          p.stdout.on('data',d=>out+=d.toString());
+          p.stderr.on('data',d=>err+=d.toString());
+          p.on('error',reject);
+          p.on('close',code=>code===0?resolve():reject(new Error((err||out||('7zip exit '+code)).slice(-2000))));
+        }).catch(()=>{});
+        const incoming=await fs.readJson(path.join(metaStage,'project.json')).catch(()=>null);
+        if(incoming){
+          if(!/^[0-9a-f-]{16,64}$/i.test(requestedId))requestedId=String(incoming.id||'');
+          if(!incomingRevision)incomingRevision=String(incoming.editableRevision||'');
+        }
+      }finally{
+        await fs.remove(metaStage).catch(()=>{});
+      }
+    }
+
     const id=/^[0-9a-f-]{16,64}$/i.test(requestedId)?requestedId:crypto.randomUUID();
     const dir=projectDir(id);
     await fs.ensureDir(dir);
@@ -785,14 +813,14 @@ app.post('/api/remote-build',remoteWorkspaceUpload.single('workspace'),async(req
       run,
       accepted:true,
       stage:'remote-prepare',
-      cache:!!(existing?.editableRevision&&req.body?.editableRevision&&String(existing.editableRevision)===String(req.body.editableRevision))
+      cache:!!(existing?.editableRevision&&incomingRevision&&String(existing.editableRevision)===String(incomingRevision))
     });
 
     setImmediate(()=>void processRemoteBuildUpload({
       id,
       uploadPath:stableUpload,
       runId:run.id,
-      incomingRevision:String(req.body?.editableRevision||'')
+      incomingRevision
     }));
   }catch(e){
     if(uploadPath)await fs.remove(uploadPath).catch(()=>{});
