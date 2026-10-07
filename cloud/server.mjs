@@ -7,6 +7,7 @@ import {fileURLToPath} from 'node:url';
 import os from 'node:os';
 import crypto from 'node:crypto';
 import archiver from 'archiver';
+import AdmZip from 'adm-zip';
 import { spawn } from 'node:child_process';
 import {ROOT,init,projectDir,safeJoin,readMeta,writeMeta,listDir} from './lib.mjs';
 import {decompile,rebuild,ensureAutomaticSigningKey} from './tasks.mjs';
@@ -34,6 +35,15 @@ const upload=multer({
     const name=file.originalname.toLowerCase();
     const ok=/\.(apk|exe|msi|msix|appx|appxbundle|msixbundle|appimage|deb|rpm|elf|run|zip|tar|tgz|txz|tar\.gz|tar\.xz)$/i.test(name);
     cb(ok?null:new Error('Supported files: APK, EXE, MSI, MSIX, APPX, ZIP, AppImage, DEB, RPM, ELF, TAR/TGZ/TXZ'),ok);
+  }
+});
+
+const remoteWorkspaceUpload=multer({
+  dest:path.join(os.tmpdir(),'apk-studio-remote-build-upload'),
+  limits:{fileSize:1024*1024*1024},
+  fileFilter:(_req,file,cb)=>{
+    const ok=file.originalname.toLowerCase().endsWith('.zip');
+    cb(ok?null:new Error('Remote build workspace must be a ZIP file'),ok);
   }
 });
 
@@ -606,6 +616,69 @@ app.get('/api/projects/:id/build-runs/:runId/steps/:stepId/log',async(req,res,ne
     const log=await readStepLog(req.params.id,req.params.runId,req.params.stepId);
     res.json({runId:run.id,stepId:step.id,status:step.status,log});
   }catch(e){next(e);}
+});
+
+app.post('/api/remote-build',remoteWorkspaceUpload.single('workspace'),async(req,res,next)=>{
+  let uploadPath=req.file?.path||'';
+  try{
+    if(!req.file)throw new Error('Workspace ZIP is required');
+    const id='remote-'+crypto.randomUUID();
+    const dir=projectDir(id);
+    await fs.ensureDir(dir);
+
+    const zip=new AdmZip(uploadPath);
+    const allowedRootPrefixes=['editable/'];
+    const allowedFiles=new Set([
+      'project.json',
+      'signing-config.json',
+      'user-signing.keystore',
+      'automatic-signing.json',
+      'apkstudio-signing.jks'
+    ]);
+
+    for(const entry of zip.getEntries()){
+      if(entry.isDirectory)continue;
+      const raw=String(entry.entryName||'').replace(/\\/g,'/');
+      const clean=path.posix.normalize('/'+raw).slice(1);
+      if(!clean||clean.startsWith('..')||path.isAbsolute(clean))continue;
+      const allowed=allowedFiles.has(clean)||allowedRootPrefixes.some(p=>clean.startsWith(p));
+      if(!allowed)continue;
+      const dest=safeJoin(dir,clean);
+      await fs.ensureDir(path.dirname(dest));
+      await fs.writeFile(dest,entry.getData());
+    }
+
+    if(!await fs.pathExists(path.join(dir,'editable'))){
+      throw new Error('Workspace ZIP does not contain an editable project');
+    }
+
+    const originalMeta=await fs.readJson(path.join(dir,'project.json')).catch(()=>({}));
+    const meta={
+      ...originalMeta,
+      id,
+      platform:'android',
+      format:'apk',
+      status:'ready',
+      stage:'ready',
+      buildStatus:null,
+      buildStage:null,
+      buildArtifact:null,
+      buildError:null,
+      remoteBuild:true,
+      createdAt:new Date().toISOString(),
+      updatedAt:new Date().toISOString()
+    };
+    await fs.writeJson(path.join(dir,'project.json'),meta,{spaces:2});
+    if(!await fs.pathExists(path.join(dir,'build.log')))await fs.writeFile(path.join(dir,'build.log'),'');
+    const signing=await getProjectSigningState(id,{prepare:true});
+    if(!signing.connected)throw new Error(signing.error||'Remote builder could not connect a signing key');
+
+    const run=await createBuildRun(id,{platform:'android',title:'Build APK'});
+    await writeMeta(id,{buildStatus:'building',buildStage:'queued',buildStartedAt:new Date().toISOString(),buildError:null,activeBuildRunId:run.id});
+    void rebuild(id,{runId:run.id});
+    res.status(202).json({ok:true,id,run});
+  }catch(e){next(e)}
+  finally{if(uploadPath)await fs.remove(uploadPath).catch(()=>{})}
 });
 
 app.post('/api/projects/:id/build',async(req,res,next)=>{
