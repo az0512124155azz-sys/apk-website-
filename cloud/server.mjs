@@ -622,7 +622,7 @@ app.post('/api/remote-build',remoteWorkspaceUpload.single('workspace'),async(req
   let uploadPath=req.file?.path||'';
   try{
     if(!req.file)throw new Error('Workspace ZIP is required');
-    const id='remote-'+crypto.randomUUID();
+    const id=crypto.randomUUID();
     const dir=projectDir(id);
     await fs.ensureDir(dir);
 
