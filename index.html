@@ -57,7 +57,7 @@ html,body{background:#0d1117;color:#e6edf3;margin:0}.hidden{display:none!importa
 .build-run-empty{padding:28px 16px;text-align:center;color:#8b949e;font-size:12px}
 .build-run-detail{margin-top:18px;border:1px solid #30363d;border-radius:7px;overflow:hidden;background:#0d1117}
 .build-run-detail-head{min-height:64px;background:#161b22;border-bottom:1px solid #30363d;display:flex;align-items:center;justify-content:space-between;gap:16px;padding:0 16px}
-.build-run-detail-head>div{display:flex;flex-direction:column;gap:4px}
+.build-run-detail-head>.build-detail-heading-text{display:flex;flex-direction:column;gap:4px;flex:1}
 .build-run-detail-head strong{font-size:14px}.build-run-detail-head span{font-size:11px;color:#8b949e}
 .build-detail-status{font-size:12px!important;font-weight:600!important}
 .build-detail-status.ready{color:#3fb950}.build-detail-status.error{color:#f85149}.build-detail-status.building{color:#d29922}.build-detail-status.idle{color:#8b949e}
@@ -238,13 +238,13 @@ html,body{background:#0d1117;color:#e6edf3;margin:0}.hidden{display:none!importa
     <div class="build-actions-main">
       <div class="build-actions-heading">
         <div>
-          <h2>All builds</h2>
+          <h2 id="buildPageTitle">All builds</h2>
           <p>Build and sign the editable APK.</p>
         </div>
         <button class="button primary" id="buildPage">⚒ Build APK</button>
       </div>
 
-      <div class="build-runs-card">
+      <div class="build-runs-card" id="buildRunsCard">
         <div class="build-runs-toolbar">
           <strong id="buildRunCount">0 workflow runs</strong>
           <div class="build-runs-filter"><span>⌕</span><input id="buildRunSearch" placeholder="Filter workflow runs"></div>
@@ -254,7 +254,8 @@ html,body{background:#0d1117;color:#e6edf3;margin:0}.hidden{display:none!importa
 
       <section class="build-run-detail" id="buildRunDetail">
         <div class="build-run-detail-head">
-          <div>
+          <button class="icon-button" id="buildRunBack" title="Back to all builds">←</button>
+          <div class="build-detail-heading-text">
             <strong id="buildDetailTitle">Build APK</strong>
             <span id="buildDetailMeta">No build selected</span>
           </div>
@@ -332,7 +333,7 @@ let lastProgressDone=null,lastProgressChangedAt=0,recoveryRequested=false;
 let githubSession={connected:false,user:null},githubProjects=[];
 let signingInfo={mode:'apkstudio',configured:false,automaticReady:false};
 let pendingProjectPlatform='';
-let selectedBuildRunIndex=0,selectedBuildRunId='',selectedBuildStepId='',stepLogRequestSeq=0;
+let selectedBuildRunIndex=0,selectedBuildRunId='',selectedBuildStepId='',stepLogRequestSeq=0,buildDetailMode=false;
 
 function rootMetaForCurrent(r){
   const platform=current?.platform||'android';
@@ -719,7 +720,7 @@ async function deleteProject(id){if(!confirm('Delete this project?'))return;try{
 async function openProject(id){
   clearInterval(pollTimer);
   signingInfo={mode:'apkstudio',configured:false,automaticReady:false};
-  selectedBuildRunId='';selectedBuildStepId='';
+  selectedBuildRunId='';selectedBuildStepId='';buildDetailMode=false;
   const listed=projects.find(p=>p.id===id);
   activeProjectBase=listed?listed._base:'';
   if(activeProjectBase===LOCAL_API)await ensureLocalAgentCurrent();
@@ -837,6 +838,9 @@ async function loadSelectedBuildStepLog(run,step){
 function renderBuildActions(){
   if(!current)return;
   const runs=currentBuildRuns();
+  $('buildRunsCard').classList.toggle('hidden',buildDetailMode);
+  $('buildRunDetail').classList.toggle('hidden',!buildDetailMode);
+  $('buildPageTitle').textContent=buildDetailMode?'Build run':'All builds';
   if(!selectedBuildRunId&&runs[0])selectedBuildRunId=runs[0].id;
   let selectedIndex=runs.findIndex(r=>r.id===selectedBuildRunId);
   if(selectedIndex<0){selectedIndex=0;selectedBuildRunId=runs[0]?.id||''}
@@ -871,6 +875,7 @@ function renderBuildActions(){
   document.querySelectorAll('[data-build-run-id]').forEach(el=>el.onclick=()=>{
     selectedBuildRunId=el.dataset.buildRunId||'';
     selectedBuildStepId='';
+    buildDetailMode=true;
     renderBuildActions();
   });
 
@@ -979,7 +984,7 @@ async function build(){
     current.buildStatus='building';
     current.buildStage=d.stage||current.buildStage||'queued';
     current.buildStartedAt=current.buildStartedAt||new Date().toISOString();
-    selectedBuildRunIndex=0;selectedBuildRunId=d.run?.id||'';selectedBuildStepId='';
+    selectedBuildRunIndex=0;selectedBuildRunId=d.run?.id||'';selectedBuildStepId='';buildDetailMode=true;
     switchSection('build');
     renderProject();
     clearInterval(pollTimer);
@@ -1151,7 +1156,8 @@ $('rootPicker').onclick=()=>$('rootMenu').classList.toggle('hidden');document.qu
 $('refreshTree').onclick=loadDir;$('saveFile').onclick=saveFile;$('editor').oninput=()=>{const dirty=$('editor').value!==saved;$('dirtyState').textContent=dirty?'● Unsaved':'';$('saveFile').disabled=!dirty||root!=='editable'};
 $('buildTop').onclick=build;$('buildPage').onclick=build;
 $('buildRunSearch').oninput=()=>renderBuildActions();
-$('buildAllRuns').onclick=()=>{document.querySelectorAll('.build-side-item').forEach(x=>x.classList.remove('active'));$('buildAllRuns').classList.add('active');$('buildRunSearch').value='';renderBuildActions()};
+$('buildRunBack').onclick=()=>{buildDetailMode=false;selectedBuildStepId='';renderBuildActions()};
+$('buildAllRuns').onclick=()=>{document.querySelectorAll('.build-side-item').forEach(x=>x.classList.remove('active'));$('buildAllRuns').classList.add('active');$('buildRunSearch').value='';buildDetailMode=false;renderBuildActions()};
 $('buildWorkflow').onclick=()=>{document.querySelectorAll('.build-side-item').forEach(x=>x.classList.remove('active'));$('buildWorkflow').classList.add('active');$('buildRunSearch').value=current?.platform==='windows'?'Build Windows':current?.platform==='linux'?'Build Linux':'Build APK';renderBuildActions()};
 $('buildSigningNav').onclick=()=>{document.querySelectorAll('.build-side-item').forEach(x=>x.classList.remove('active'));$('buildSigningNav').classList.add('active');$('signingForm').classList.remove('hidden');$('configureSigning').scrollIntoView({behavior:'smooth',block:'center'})};
 $('configureSigning').onclick=()=>$('signingForm').classList.remove('hidden');
