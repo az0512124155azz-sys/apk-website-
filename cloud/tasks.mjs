@@ -59,7 +59,7 @@ async function signingConfigFor(dir){
   };
 }
 
-async function ensureAutomaticSigningKey(id){
+export async function ensureAutomaticSigningKey(id){
   const dir=projectDir(id);
   const signing=await signingConfigFor(dir);
   if(signing.type!=='apkstudio')return signing;
