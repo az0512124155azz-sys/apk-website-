@@ -18,7 +18,7 @@ const sessionSecret=process.env.SESSION_SECRET||'apk-studio-dev-secret-change-me
 const githubClientId=process.env.GITHUB_CLIENT_ID||'';
 const githubClientSecret=process.env.GITHUB_CLIENT_SECRET||'';
 const publicOrigin=process.env.PUBLIC_ORIGIN||'https://apk-website-sable.vercel.app';
-const AGENT_VERSION='1.1.0';
+const AGENT_VERSION='1.2.0';
 app.use(cors({origin:true}));
 app.use((req,_res,next)=>{ console.log(new Date().toISOString(), req.method, req.url); next(); });
 app.use(express.json({limit:'10mb'}));
@@ -423,7 +423,8 @@ app.get('/api/projects/:id/signing',async(req,res,next)=>{
       configured:!!cfg,
       alias:cfg?.alias||null,
       fileName:cfg?.fileName||null,
-      autoFound:!!cfg?.autoFound
+      autoFound:false,
+      automaticReady:await fs.pathExists(path.join(dir,'apkstudio-signing.jks'))
     });
   }catch(e){next(e);}
 });
