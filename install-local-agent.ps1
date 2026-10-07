@@ -100,6 +100,7 @@ $runner=Join-Path $installDir 'run-agent.ps1'
 $nodeExeEsc=$nodeExe
 $java=Join-Path $cloud '.tools\\java\\bin\\java.exe'
 $agentLog=Join-Path $installDir 'agent.log'
+$agentErr=Join-Path $installDir 'agent-error.log'
 $runnerBody=@"
 \$ErrorActionPreference='SilentlyContinue'
 \$env:PORT='32145'
@@ -112,7 +113,7 @@ $runnerBody=@"
 Set-Location '$cloud'
 while(\$true){
   try{
-    \$p=Start-Process -FilePath '$nodeExeEsc' -ArgumentList 'server.mjs' -WorkingDirectory '$cloud' -WindowStyle Hidden -RedirectStandardOutput '$agentLog' -RedirectStandardError '$agentLog' -PassThru
+    \$p=Start-Process -FilePath '$nodeExeEsc' -ArgumentList 'server.mjs' -WorkingDirectory '$cloud' -WindowStyle Hidden -RedirectStandardOutput '$agentLog' -RedirectStandardError '$agentErr' -PassThru
     \$p.WaitForExit()
   }catch{}
   Start-Sleep -Seconds 2
@@ -168,7 +169,17 @@ Get-CimInstance Win32_Process -ErrorAction SilentlyContinue |
 Start-Process -FilePath "$env:WINDIR\\System32\\wscript.exe" -ArgumentList ('"'+$launcher+'"') -WindowStyle Hidden
 
 if(-not (Wait-Health)){
-  throw 'Local Agent did not start within 60 seconds. See %LOCALAPPDATA%\\APKStudioLocal\\agent.log.'
+  Write-Host ''
+  Write-Host 'Local Agent failed to become healthy.' -ForegroundColor Red
+  if(Test-Path $agentLog){
+    Write-Host '--- agent.log ---'
+    Get-Content $agentLog -Tail 30 -ErrorAction SilentlyContinue | ForEach-Object { Write-Host $_ }
+  }
+  if(Test-Path $agentErr){
+    Write-Host '--- agent-error.log ---'
+    Get-Content $agentErr -Tail 30 -ErrorAction SilentlyContinue | ForEach-Object { Write-Host $_ }
+  }
+  throw 'Local Agent did not start within 60 seconds.'
 }
 
 Set-Content -Path (Join-Path $installDir 'installed.txt') -Value (Get-Date).ToString('o') -Encoding ASCII
