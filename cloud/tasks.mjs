@@ -4,6 +4,7 @@ import crypto from 'node:crypto';
 import os from 'node:os';
 import AdmZip from 'adm-zip';
 import {java,jadxJar,apktoolJar,projectDir,writeMeta,run,walk,log} from './lib.mjs';
+import {startRun,finishRun,setStep,appendStepLog,stepLogFile} from './workflows.mjs';
 
 const shortError = (e) => String(e?.message || e || 'Unknown error').slice(-12000);
 const localMode = process.env.LOCAL_PROCESSOR === '1';
@@ -221,7 +222,7 @@ export async function decompile(id,{forceJadxOom=false,skipPerDex=false}={}){
   }
 }
 
-export async function rebuild(id){
+export async function rebuild(id,{runId}={}){
   const dir=projectDir(id),editable=path.join(dir,'editable'),output=path.join(dir,'output');
   await fs.ensureDir(output);
   const meta=await fs.readJson(path.join(dir,'project.json')).catch(()=>({}));
@@ -230,33 +231,65 @@ export async function rebuild(id){
   const signing=await signingConfigFor(dir);
   const sameRevision=!!meta.editableRevision && meta.buildRevision===meta.editableRevision;
   const sameSigning=meta.buildSigningFingerprint===signing.fingerprint;
+  let activeStep='preflight';
+
+  const stepLog=async(stepId,message)=>{
+    if(runId)await appendStepLog(id,runId,stepId,message);
+    await log(id,message);
+  };
+  const stepStart=async(stepId,message)=>{
+    activeStep=stepId;
+    if(runId)await setStep(id,runId,stepId,'in_progress');
+    if(message)await stepLog(stepId,message);
+  };
+  const stepDone=async(stepId,message)=>{
+    if(message)await stepLog(stepId,message);
+    if(runId)await setStep(id,runId,stepId,'completed');
+  };
+  const stepSkip=async(stepId,message)=>{
+    if(message)await stepLog(stepId,message);
+    if(runId)await setStep(id,runId,stepId,'skipped');
+  };
+
+  if(runId)await startRun(id,runId);
+  await log(id,'=== BUILD START ===');
+  await stepStart('preflight',`Build resources: heap=${javaXmx}, threads=${workerThreads}, local=${localMode}`);
 
   if(sameRevision && sameSigning && await fs.pathExists(signedArtifact)){
-    await log(id,'=== BUILD START ===');
-    await log(id,'No source changes detected. Reusing existing signed APK.');
+    await stepDone('preflight','Workspace and signing configuration are unchanged.');
+    await stepSkip('compile','No source changes detected. Reusing existing compiled APK.');
+    await stepSkip('sign','Existing signed APK is still valid for this signing configuration.');
+    await stepSkip('verify','Cached signed APK already passed verification.');
+    await stepStart('artifact','Publishing cached signed APK...');
     await writeMeta(id,{
       buildStatus:'ready',
+      buildStage:'ready',
       buildArtifact:'output/app-rebuilt-signed.apk',
       buildSigned:true,
       signingType:signing.type==='custom'?'Original/custom keystore':'APK Studio project key',
-      buildCached:true
+      buildCached:true,
+      buildFinishedAt:new Date().toISOString()
     });
+    await stepDone('artifact','Cached APK artifact is ready.');
+    if(runId)await finishRun(id,runId,{status:'completed',artifact:'output/app-rebuilt-signed.apk'});
     return;
   }
 
-  await writeMeta(id,{buildStatus:'building',buildError:null,buildCached:false,buildStage:sameRevision?'signing':'rebuild',buildArtifact:null,buildSigned:false});
-  await log(id,'=== BUILD START ===');
-  await log(id,`Build resources: heap=${javaXmx}, threads=${workerThreads}, local=${localMode}`);
+  await writeMeta(id,{buildStatus:'building',buildError:null,buildCached:false,buildStage:'preflight',buildArtifact:null,buildSigned:false});
+  await stepDone('preflight','Build prerequisites are ready.');
 
   try{
+    activeStep='compile';
     if(!sameRevision || !await fs.pathExists(artifact)){
-      await log(id,'Rebuilding APK from editable workspace...');
+      await writeMeta(id,{buildStage:'compile'});
+      await stepStart('compile','Rebuilding APK from editable workspace...');
       await run(id,java,[
         '-Xms'+javaXms,'-Xmx'+javaXmx,'-XX:+UseSerialGC',
         '-jar',apktoolJar,'b','-j',workerThreads,editable,'-o',artifact
-      ],[0],{idleTimeoutMs:180000,timeoutMs:1200000});
+      ],[0],{idleTimeoutMs:180000,timeoutMs:1200000,logFile:runId?stepLogFile(id,runId,'compile'):undefined});
+      await stepDone('compile','APK compilation completed.');
     }else{
-      await log(id,'Source unchanged. Skipping Apktool rebuild and reusing unsigned APK.');
+      await stepSkip('compile','Source unchanged. Reusing unsigned APK from the previous build.');
     }
 
     if(!await fs.pathExists(keytoolBin) || !await fs.pathExists(jarsignerBin)){
@@ -266,31 +299,35 @@ export async function rebuild(id){
     if(signing.type==='apkstudio' && !await fs.pathExists(signing.keystore)){
       await ensureAutomaticSigningKey(id);
     }
-
     if(signing.type==='custom' && (!signing.alias || !signing.storePass)){
       throw new Error('Custom signing key is missing alias or keystore password.');
     }
 
+    activeStep='sign';
     await fs.remove(signedArtifact).catch(()=>{});
     await writeMeta(id,{buildStage:'signing'});
-    await log(id,`Signing rebuilt APK with ${signing.type==='custom'?'custom/original keystore':'APK Studio project key'}...`);
+    await stepStart('sign',`Signing rebuilt APK with ${signing.type==='custom'?'custom/original keystore':'APK Studio project key'}...`);
     await run(id,jarsignerBin,[
       '-keystore',signing.keystore,
       '-storepass',signing.storePass,
       '-keypass',signing.keyPass,
       '-sigalg','SHA256withRSA','-digestalg','SHA-256',
       '-signedjar',signedArtifact,artifact,signing.alias
-    ],[0],{timeoutMs:180000});
+    ],[0],{timeoutMs:180000,logFile:runId?stepLogFile(id,runId,'sign'):undefined});
+    await stepDone('sign','APK signing completed.');
 
+    activeStep='verify';
     await writeMeta(id,{buildStage:'verifying'});
-    await log(id,'Verifying APK signature...');
-    const verify=await run(id,jarsignerBin,['-verify',signedArtifact],[0],{timeoutMs:120000});
+    await stepStart('verify','Verifying APK signature...');
+    const verify=await run(id,jarsignerBin,['-verify',signedArtifact],[0],{timeoutMs:120000,logFile:runId?stepLogFile(id,runId,'verify'):undefined});
     const verifyText=(verify.out||'')+'\n'+(verify.err||'');
     if(!/jar verified/i.test(verifyText)){
       throw new Error('APK signature verification did not confirm a valid signature.');
     }
-    await log(id,'APK signature verified. Self-signed certificates are valid for Android APK installation.');
+    await stepDone('verify','APK signature verified successfully.');
 
+    activeStep='artifact';
+    await stepStart('artifact','Publishing rebuilt APK...');
     await writeMeta(id,{
       buildStatus:'ready',
       buildStage:'ready',
@@ -302,9 +339,16 @@ export async function rebuild(id){
       buildCached:false,
       buildFinishedAt:new Date().toISOString()
     });
+    await stepDone('artifact','Signed APK is ready to download.');
+    if(runId)await finishRun(id,runId,{status:'completed',artifact:'output/app-rebuilt-signed.apk'});
   }catch(e){
     const buildError=shortError(e);
     await log(id,'BUILD ERROR: '+buildError);
+    if(runId){
+      await appendStepLog(id,runId,activeStep,'ERROR: '+buildError);
+      await setStep(id,runId,activeStep,'failed',{error:buildError});
+      await finishRun(id,runId,{status:'failed',error:buildError});
+    }
     await writeMeta(id,{buildStatus:'error',buildStage:'error',buildError,buildArtifact:null,buildSigned:false});
   }
 }
