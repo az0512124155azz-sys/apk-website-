@@ -651,8 +651,8 @@ app.post('/api/remote-build',remoteWorkspaceUpload.single('workspace'),async(req
     await fs.remove(staging).catch(()=>{});
     await fs.ensureDir(staging);
 
+    const sevenZipExec=await resolveSevenZipExecutable();
     await new Promise((resolve,reject)=>{
-      const sevenZipExec=await resolveSevenZipExecutable();
       const p=spawn(sevenZipExec,['x','-y',uploadPath,'-o'+staging],{shell:false});
       let out='',err='';
       p.stdout.on('data',d=>out+=d.toString());
