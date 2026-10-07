@@ -16,7 +16,24 @@ const javaBinDir = path.dirname(java);
 const isWindows = process.platform === 'win32';
 const keytoolBin = path.join(javaBinDir,isWindows?'keytool.exe':'keytool');
 const jarsignerBin = path.join(javaBinDir,isWindows?'jarsigner.exe':'jarsigner');
+const uberSignerJar = path.join(path.dirname(jadxJar),'..','..','uber-apk-signer-1.3.0.jar');
+const uberSignerUrl = 'https://github.com/patrickfav/uber-apk-signer/releases/download/v1.3.0/uber-apk-signer-1.3.0.jar';
 const signingAlias = 'apkstudio';
+
+async function ensureModernApkSigner(id){
+  if(await fs.pathExists(uberSignerJar))return uberSignerJar;
+  await fs.ensureDir(path.dirname(uberSignerJar));
+  await log(id,'Installing modern Android APK signer (one-time)...');
+  const r=await fetch(uberSignerUrl,{redirect:'follow'});
+  if(!r.ok)throw new Error('Could not download modern APK signer: HTTP '+r.status);
+  const buf=Buffer.from(await r.arrayBuffer());
+  if(buf.length<1000000)throw new Error('Downloaded APK signer is unexpectedly small.');
+  const tmp=uberSignerJar+'.tmp';
+  await fs.writeFile(tmp,buf);
+  await fs.move(tmp,uberSignerJar,{overwrite:true});
+  await log(id,'Modern APK signer installed.');
+  return uberSignerJar;
+}
 
 async function ensureAutomaticSigningConfig(dir){
   const configFile=path.join(dir,'automatic-signing.json');
@@ -300,9 +317,10 @@ export async function rebuild(id,{runId}={}){
       await stepSkip('compile','Source unchanged. Reusing unsigned APK from the previous build.');
     }
 
-    if(!await fs.pathExists(keytoolBin) || !await fs.pathExists(jarsignerBin)){
-      throw new Error('APK signing tools are missing. Update the APK Studio Local Agent so it installs a full JDK.');
+    if(!await fs.pathExists(keytoolBin)){
+      throw new Error('APK signing tools are missing. A full JDK with keytool is required.');
     }
+    const modernSigner=await ensureModernApkSigner(id);
 
     if(signing.type==='apkstudio' && !await fs.pathExists(signing.keystore)){
       await ensureAutomaticSigningKey(id);
@@ -313,26 +331,32 @@ export async function rebuild(id,{runId}={}){
 
     activeStep='sign';
     await fs.remove(signedArtifact).catch(()=>{});
+    await fs.copy(artifact,signedArtifact,{overwrite:true});
     await writeMeta(id,{buildStage:'signing'});
-    await stepStart('sign',`Signing rebuilt APK with ${signing.type==='custom'?'custom/original keystore':'APK Studio project key'}...`);
-    await run(id,jarsignerBin,[
-      '-keystore',signing.keystore,
-      '-storepass',signing.storePass,
-      '-keypass',signing.keyPass,
-      '-sigalg','SHA256withRSA','-digestalg','SHA-256',
-      '-signedjar',signedArtifact,artifact,signing.alias
-    ],[0],{timeoutMs:180000,logFile:runId?stepLogFile(id,runId,'sign'):undefined});
-    await stepDone('sign','APK signing completed.');
+    await stepStart('sign',`Zipaligning and signing rebuilt APK with ${signing.type==='custom'?'custom/original keystore':'APK Studio project key'}...`);
+    await run(id,java,[
+      '-jar',modernSigner,
+      '--apks',signedArtifact,
+      '--ks',signing.keystore,
+      '--ksAlias',signing.alias,
+      '--ksPass',signing.storePass,
+      '--ksKeyPass',signing.keyPass,
+      '--allowResign',
+      '--overwrite',
+      '--verbose'
+    ],[0],{timeoutMs:240000,logFile:runId?stepLogFile(id,runId,'sign'):undefined});
+    await stepDone('sign','APK zipalign + modern signing completed.');
 
     activeStep='verify';
     await writeMeta(id,{buildStage:'verifying'});
-    await stepStart('verify','Verifying APK signature...');
-    const verify=await run(id,jarsignerBin,['-verify',signedArtifact],[0],{timeoutMs:120000,logFile:runId?stepLogFile(id,runId,'verify'):undefined});
-    const verifyText=(verify.out||'')+'\n'+(verify.err||'');
-    if(!/jar verified/i.test(verifyText)){
-      throw new Error('APK signature verification did not confirm a valid signature.');
-    }
-    await stepDone('verify','APK signature verified successfully.');
+    await stepStart('verify','Verifying APK alignment and Android signature schemes...');
+    await run(id,java,[
+      '-jar',modernSigner,
+      '--apks',signedArtifact,
+      '--onlyVerify',
+      '--verbose'
+    ],[0],{timeoutMs:180000,logFile:runId?stepLogFile(id,runId,'verify'):undefined});
+    await stepDone('verify','APK alignment and Android signature verification passed.');
 
     activeStep='artifact';
     await stepStart('artifact','Publishing rebuilt APK...');
@@ -345,6 +369,8 @@ export async function rebuild(id,{runId}={}){
       buildRevision:meta.editableRevision||String(Date.now()),
       buildSigningFingerprint:signing.fingerprint,
       buildCached:false,
+      signingEngine:'apksigner+zipalign',
+      signatureSchemes:'v1/v2/v3 compatible',
       buildFinishedAt:new Date().toISOString()
     });
     await stepDone('artifact','Signed APK is ready to download.');
