@@ -11,7 +11,7 @@ import archiver from 'archiver';
 import { spawn } from 'node:child_process';
 import {ROOT,init,projectDir,safeJoin,readMeta,writeMeta,listDir} from './lib.mjs';
 import {decompile,rebuild,ensureAutomaticSigningKey} from './tasks.mjs';
-import {createBuildRun,listBuildRuns,readStepLog} from './workflows.mjs';
+import {createBuildRun,listBuildRuns,readStepLog,startRun,finishRun,setStep,appendStepLog} from './workflows.mjs';
 import {detectPlatform,detectFormat,storedOriginalName,inspectPackage,rebuildPackage} from './platform-tasks.mjs';
 
 await init();
@@ -639,16 +639,14 @@ app.get('/api/projects/:id/build-runs/:runId/steps/:stepId/log',async(req,res,ne
   }catch(e){next(e);}
 });
 
-app.post('/api/remote-build',remoteWorkspaceUpload.single('workspace'),async(req,res,next)=>{
-  let uploadPath=req.file?.path||'';
-  let staging='';
+async function processRemoteBuildUpload({id,uploadPath,runId,incomingRevision}){
+  const dir=projectDir(id);
+  const staging=path.join(os.tmpdir(),'apk-studio-remote-extract-'+crypto.randomUUID());
   try{
-    if(!req.file)throw new Error('Workspace ZIP is required');
-
-    const tempToken=crypto.randomUUID();
-    staging=path.join(os.tmpdir(),'apk-studio-remote-extract-'+tempToken);
     await fs.remove(staging).catch(()=>{});
     await fs.ensureDir(staging);
+    await setStep(id,runId,'preflight','in_progress');
+    await appendStepLog(id,runId,'preflight','Preparing remote workspace...');
 
     const sevenZipExec=await resolveSevenZipExecutable();
     await new Promise((resolve,reject)=>{
@@ -661,26 +659,24 @@ app.post('/api/remote-build',remoteWorkspaceUpload.single('workspace'),async(req
     });
 
     const editableSrc=path.join(staging,'editable');
-    if(!await fs.pathExists(editableSrc)){
-      throw new Error('Workspace ZIP does not contain an editable project');
-    }
+    if(!await fs.pathExists(editableSrc))throw new Error('Workspace ZIP does not contain an editable project');
 
     const incomingMeta=await fs.readJson(path.join(staging,'project.json')).catch(()=>({}));
-    const incomingId=String(incomingMeta.id||'');
-    const id=/^[0-9a-f-]{16,64}$/i.test(incomingId)?incomingId:crypto.randomUUID();
-    const dir=projectDir(id);
-    await fs.ensureDir(dir);
-
     const previousMeta=await fs.readJson(path.join(dir,'project.json')).catch(()=>null);
+    const revision=String(incomingMeta.editableRevision||incomingRevision||'');
     const sameRevision=!!(
       previousMeta?.editableRevision &&
-      incomingMeta?.editableRevision &&
-      previousMeta.editableRevision===incomingMeta.editableRevision
+      revision &&
+      String(previousMeta.editableRevision)===revision &&
+      await fs.pathExists(path.join(dir,'editable'))
     );
 
     if(!sameRevision){
+      await appendStepLog(id,runId,'preflight','Source revision changed. Refreshing editable workspace...');
       await fs.remove(path.join(dir,'editable')).catch(()=>{});
       await fs.copy(editableSrc,path.join(dir,'editable'),{overwrite:true});
+    }else{
+      await appendStepLog(id,runId,'preflight','Source revision unchanged. Reusing cached editable workspace.');
     }
 
     for(const name of [
@@ -690,10 +686,7 @@ app.post('/api/remote-build',remoteWorkspaceUpload.single('workspace'),async(req
       'apkstudio-signing.jks'
     ]){
       const src=path.join(staging,name);
-      const dest=path.join(dir,name);
-      if(await fs.pathExists(src)){
-        await fs.copy(src,dest,{overwrite:true});
-      }
+      if(await fs.pathExists(src))await fs.copy(src,path.join(dir,name),{overwrite:true});
     }
 
     const meta={
@@ -706,13 +699,19 @@ app.post('/api/remote-build',remoteWorkspaceUpload.single('workspace'),async(req
       stage:'ready',
       remoteBuild:true,
       remoteCacheHit:sameRevision,
-      buildRevision:previousMeta?.buildRevision||incomingMeta?.buildRevision||null,
-      buildSigningFingerprint:previousMeta?.buildSigningFingerprint||incomingMeta?.buildSigningFingerprint||null,
-      signingEngine:previousMeta?.signingEngine||incomingMeta?.signingEngine||null,
-      signatureSchemes:previousMeta?.signatureSchemes||incomingMeta?.signatureSchemes||null,
-      buildArtifact:previousMeta?.buildArtifact||incomingMeta?.buildArtifact||null,
-      buildSigned:previousMeta?.buildSigned??incomingMeta?.buildSigned??false,
-      buildFinishedAt:previousMeta?.buildFinishedAt||incomingMeta?.buildFinishedAt||null,
+      editableRevision:revision||previousMeta?.editableRevision||incomingMeta?.editableRevision||String(Date.now()),
+      buildRevision:previousMeta?.buildRevision||null,
+      buildSigningFingerprint:previousMeta?.buildSigningFingerprint||null,
+      signingEngine:previousMeta?.signingEngine||null,
+      signatureSchemes:previousMeta?.signatureSchemes||null,
+      buildArtifact:previousMeta?.buildArtifact||null,
+      buildSigned:previousMeta?.buildSigned??false,
+      buildFinishedAt:previousMeta?.buildFinishedAt||null,
+      buildStatus:'building',
+      buildStage:'preflight',
+      buildStartedAt:new Date().toISOString(),
+      buildError:null,
+      activeBuildRunId:runId,
       createdAt:previousMeta?.createdAt||incomingMeta?.createdAt||new Date().toISOString(),
       updatedAt:new Date().toISOString()
     };
@@ -722,27 +721,82 @@ app.post('/api/remote-build',remoteWorkspaceUpload.single('workspace'),async(req
     const signing=await getProjectSigningState(id,{prepare:true});
     if(!signing.connected)throw new Error(signing.error||'Remote builder could not connect a signing key');
 
-    const freshMeta=await readMeta(id);
-    if(freshMeta.buildStatus==='building'){
+    await appendStepLog(id,runId,'preflight',sameRevision?'Remote cache is available.':'Remote workspace is ready.');
+    await setStep(id,runId,'preflight','completed');
+
+    void rebuild(id,{runId});
+  }catch(e){
+    const error=String(e?.message||e||'Remote build preparation failed').slice(-4000);
+    await appendStepLog(id,runId,'preflight','ERROR: '+error).catch(()=>{});
+    await setStep(id,runId,'preflight','failed',{error}).catch(()=>{});
+    await finishRun(id,runId,{status:'failed',error}).catch(()=>{});
+    await writeMeta(id,{status:'ready',buildStatus:'error',buildStage:'error',buildError:error}).catch(()=>{});
+  }finally{
+    await fs.remove(uploadPath).catch(()=>{});
+    await fs.remove(staging).catch(()=>{});
+  }
+}
+
+app.post('/api/remote-build',remoteWorkspaceUpload.single('workspace'),async(req,res,next)=>{
+  let uploadPath=req.file?.path||'';
+  try{
+    if(!req.file)throw new Error('Workspace ZIP is required');
+
+    const requestedId=String(req.body?.projectId||'');
+    const id=/^[0-9a-f-]{16,64}$/i.test(requestedId)?requestedId:crypto.randomUUID();
+    const dir=projectDir(id);
+    await fs.ensureDir(dir);
+
+    const existing=await fs.readJson(path.join(dir,'project.json')).catch(()=>null);
+    if(existing?.buildStatus==='building'){
       const runs=await listBuildRuns(id);
-      return res.status(202).json({ok:true,id,alreadyBuilding:true,run:runs[0]||null,cache:sameRevision});
+      await fs.remove(uploadPath).catch(()=>{});
+      uploadPath='';
+      return res.status(202).json({ok:true,id,alreadyBuilding:true,run:runs[0]||null,cache:true});
     }
 
     const run=await createBuildRun(id,{platform:'android',title:'Build APK'});
+    await startRun(id,run.id);
     await writeMeta(id,{
+      ...(existing||{}),
+      id,
+      platform:'android',
+      format:'apk',
+      status:'processing',
+      stage:'remote-prepare',
+      remoteBuild:true,
       buildStatus:'building',
-      buildStage:'queued',
+      buildStage:'preflight',
       buildStartedAt:new Date().toISOString(),
       buildError:null,
       activeBuildRunId:run.id,
-      remoteCacheHit:sameRevision
+      updatedAt:new Date().toISOString(),
+      createdAt:existing?.createdAt||new Date().toISOString()
     });
-    void rebuild(id,{runId:run.id});
-    res.status(202).json({ok:true,id,run,cache:sameRevision});
-  }catch(e){next(e)}
-  finally{
+    if(!await fs.pathExists(path.join(dir,'build.log')))await fs.writeFile(path.join(dir,'build.log'),'');
+
+    const stableUpload=path.join(os.tmpdir(),'apk-studio-remote-build-'+id+'-'+run.id+'.zip');
+    await fs.move(uploadPath,stableUpload,{overwrite:true});
+    uploadPath='';
+
+    res.status(202).json({
+      ok:true,
+      id,
+      run,
+      accepted:true,
+      stage:'remote-prepare',
+      cache:!!(existing?.editableRevision&&req.body?.editableRevision&&String(existing.editableRevision)===String(req.body.editableRevision))
+    });
+
+    setImmediate(()=>void processRemoteBuildUpload({
+      id,
+      uploadPath:stableUpload,
+      runId:run.id,
+      incomingRevision:String(req.body?.editableRevision||'')
+    }));
+  }catch(e){
     if(uploadPath)await fs.remove(uploadPath).catch(()=>{});
-    if(staging)await fs.remove(staging).catch(()=>{});
+    next(e);
   }
 });
 
@@ -776,6 +830,42 @@ app.get('/api/projects/:id/apk',async(req,res,next)=>{
     const artifact=safeJoin(projectDir(req.params.id),m.buildArtifact);
     const downloadName=m.platform==='android'?(m.buildSigned?'app-rebuilt-signed.apk':'app-rebuilt.apk'):path.basename(artifact);
     res.download(artifact,downloadName);
+  }catch(e){next(e);}
+});
+
+app.get('/api/projects/:id/build-bundle',async(req,res,next)=>{
+  try{
+    const meta=await ensureProjectAvailable(req,req.params.id);
+    const dir=projectDir(req.params.id);
+    res.attachment('apk-studio-build-bundle.zip');
+    const a=archiver('zip',{zlib:{level:1}});
+    a.on('error',next);
+    a.pipe(res);
+
+    const editable=path.join(dir,'editable');
+    if(await fs.pathExists(editable))a.directory(editable,'editable');
+
+    const bundleMeta={
+      id:meta.id,
+      originalName:meta.originalName,
+      platform:meta.platform||'android',
+      format:meta.format||'apk',
+      editableRevision:meta.editableRevision||null,
+      createdAt:meta.createdAt||null
+    };
+    a.append(JSON.stringify(bundleMeta,null,2),{name:'project.json'});
+
+    for(const name of [
+      'signing-config.json',
+      'user-signing.keystore',
+      'automatic-signing.json',
+      'apkstudio-signing.jks'
+    ]){
+      const src=path.join(dir,name);
+      if(await fs.pathExists(src))a.file(src,{name});
+    }
+
+    await a.finalize();
   }catch(e){next(e);}
 });
 
