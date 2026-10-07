@@ -18,7 +18,7 @@ const sessionSecret=process.env.SESSION_SECRET||'apk-studio-dev-secret-change-me
 const githubClientId=process.env.GITHUB_CLIENT_ID||'';
 const githubClientSecret=process.env.GITHUB_CLIENT_SECRET||'';
 const publicOrigin=process.env.PUBLIC_ORIGIN||'https://apk-website-sable.vercel.app';
-const AGENT_VERSION='1.2.1';
+const AGENT_VERSION='1.2.2';
 app.use(cors({origin:true}));
 app.use((req,_res,next)=>{ console.log(new Date().toISOString(), req.method, req.url); next(); });
 app.use(express.json({limit:'10mb'}));
@@ -439,7 +439,10 @@ app.post('/api/projects/:id/signing/prepare',async(req,res,next)=>{
     }
     await ensureAutomaticSigningKey(req.params.id);
     res.json({ok:true,mode:'apkstudio',configured:false,automaticReady:true});
-  }catch(e){next(e);}
+  }catch(e){
+    await writeMeta(req.params.id,{signingReady:false,signingError:String(e?.message||e).slice(-4000)}).catch(()=>{});
+    next(e);
+  }
 });
 
 app.post('/api/projects/:id/signing',signingUpload.single('keystore'),async(req,res,next)=>{
