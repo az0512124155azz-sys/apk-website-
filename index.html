@@ -319,7 +319,7 @@ let projects=[],current=null,root='editable',dir='',selected='',saved='',pollTim
 let lastProgressDone=null,lastProgressChangedAt=0,recoveryRequested=false;
 let githubSession={connected:false,user:null},githubProjects=[];
 let signingInfo={mode:'apkstudio',configured:false,automaticReady:false};
-let selectedBuildRunIndex=0;
+let selectedBuildRunIndex=0,selectedBuildRunId='',selectedBuildStepId='',stepLogRequestSeq=0;
 
 const rootMeta={
  editable:{title:'Rebuildable APK',hint:'Manifest, resources and Smali'},
@@ -692,6 +692,7 @@ async function deleteProject(id){if(!confirm('Delete this project?'))return;try{
 async function openProject(id){
   clearInterval(pollTimer);
   signingInfo={mode:'apkstudio',configured:false,automaticReady:false};
+  selectedBuildRunId='';selectedBuildStepId='';
   const listed=projects.find(p=>p.id===id);
   activeProjectBase=listed?listed._base:'';
   current=await api('/api/projects/'+id,{timeout:45000});openedAt=Date.now();lastProgressDone=null;lastProgressChangedAt=Date.now();recoveryRequested=false;
@@ -735,95 +736,156 @@ function progressFromLog(log=''){
   let last=null;const re=/progress:\s*(\d+)\s+of\s+(\d+).*?\((\d+)%\)/g;let m;while((m=re.exec(log)))last={done:+m[1],total:+m[2],pct:+m[3]};
   return last;
 }
-function buildRunSegments(){
+function normalizeRunStatus(status){
+  if(status==='completed'||status==='ready'||status==='success')return 'ready';
+  if(status==='failed'||status==='error')return 'error';
+  if(status==='in_progress'||status==='building')return 'building';
+  return 'idle';
+}
+function stepIcon(status){
+  if(status==='completed')return '✓';
+  if(status==='failed')return '!';
+  if(status==='in_progress')return '•';
+  if(status==='skipped')return '−';
+  return '○';
+}
+function legacyBuildRuns(){
   const full=current?.log||'';
   const marker='=== BUILD START ===';
   const parts=full.split(marker);
   const segments=parts.length>1?parts.slice(1):[];
-  const out=segments.map((log,i)=>{
+  return segments.map((log,i)=>{
     const isLatest=i===segments.length-1;
-    let status='ready';
-    if(/BUILD ERROR:/i.test(log))status='error';
-    else if(isLatest&&current?.buildStatus==='building')status='building';
-    else if(isLatest&&current?.buildStatus==='error')status='error';
-    else if(isLatest&&current?.buildStatus==='ready')status='ready';
-    else if(!/APK signature verified|No source changes detected|signed APK|jar verified/i.test(log))status='ready';
-
-    const time=(log.match(/\[(\d{2}:\d{2}:\d{2})\]/)||[])[1]||'';
-    const stage=isLatest?(current?.buildStage||status):status;
+    let status='completed';
+    if(/BUILD ERROR:/i.test(log))status='failed';
+    else if(isLatest&&current?.buildStatus==='building')status='in_progress';
+    else if(isLatest&&current?.buildStatus==='error')status='failed';
     return {
-      index:i,
-      number:i+1,
-      log:log.trim(),
-      status,
-      stage,
-      time,
-      latest:isLatest
+      id:'legacy-'+i,number:i+1,platform:current?.platform||'android',
+      title:'Build '+((current?.platform||'android')==='android'?'APK':current?.platform),
+      status,createdAt:null,startedAt:null,finishedAt:null,currentStep:'legacy',
+      artifact:isLatest?current?.buildArtifact:null,
+      steps:[{id:'legacy',name:'Build output',status,isLegacy:true,legacyLog:log.trim()}]
     };
-  });
-  if(!out.length && current){
-    out.push({
-      index:0,number:1,log:current.log||'',status:current.buildStatus||'idle',
-      stage:current.buildStage||current.buildStatus||'idle',time:'',latest:true
-    });
+  }).reverse();
+}
+function currentBuildRuns(){
+  const structured=Array.isArray(current?.buildRuns)&&current.buildRuns.length?current.buildRuns:[];
+  return structured.length?structured:legacyBuildRuns();
+}
+async function loadSelectedBuildStepLog(run,step){
+  const seq=++stepLogRequestSeq;
+  if(!run||!step){
+    $('buildLog').textContent='Select a build step to view its output.';
+    $('logTitle').textContent='Select a step';
+    $('logSubtitle').textContent='';
+    $('buildLogLiveDot').className='log-live-dot';
+    return;
   }
-  return out.reverse();
+  $('logTitle').textContent=step.name;
+  $('logSubtitle').textContent=step.status==='in_progress'?'live output':'step output';
+  $('buildLogLiveDot').className='log-live-dot'+(step.status==='in_progress'?' live':'');
+  if(step.isLegacy){
+    $('buildLog').textContent=step.legacyLog||'No output for this step.';
+    return;
+  }
+  try{
+    const d=await api('/api/projects/'+current.id+'/build-runs/'+encodeURIComponent(run.id)+'/steps/'+encodeURIComponent(step.id)+'/log',{timeout:15000});
+    if(seq!==stepLogRequestSeq)return;
+    $('buildLog').textContent=d.log||'No output yet.';
+    $('buildLog').scrollTop=$('buildLog').scrollHeight;
+  }catch(e){
+    if(seq!==stepLogRequestSeq)return;
+    $('buildLog').textContent='Unable to load this step log: '+e.message;
+  }
+}
+function renderBuildActions(){
+  if(!current)return;
+  const runs=currentBuildRuns();
+  if(!selectedBuildRunId&&runs[0])selectedBuildRunId=runs[0].id;
+  let selectedIndex=runs.findIndex(r=>r.id===selectedBuildRunId);
+  if(selectedIndex<0){selectedIndex=0;selectedBuildRunId=runs[0]?.id||''}
+  selectedBuildRunIndex=selectedIndex;
+
+  const q=($('buildRunSearch')?.value||'').trim().toLowerCase();
+  const filtered=runs.filter(r=>{
+    const stepText=(r.steps||[]).map(s=>s.name+' '+s.status).join(' ');
+    return ((r.title||'Build')+' #'+r.number+' '+r.status+' '+r.platform+' '+stepText).toLowerCase().includes(q);
+  });
+  $('buildRunCount').textContent=runs.length+' workflow run'+(runs.length===1?'':'s');
+
+  $('buildRuns').innerHTML=filtered.length?filtered.map(r=>{
+    const status=normalizeRunStatus(r.status);
+    const source=activeProjectBase===LOCAL_API?'This computer':'Cloud';
+    const started=r.startedAt?new Date(r.startedAt):null;
+    const finished=r.finishedAt?new Date(r.finishedAt):null;
+    let duration='';
+    if(started){
+      const end=finished||new Date();
+      duration=Math.max(0,Math.floor((end-started)/1000))+'s';
+    }else duration=status==='idle'?'queued':status;
+    const date=started?started.toLocaleString():'Latest run';
+    return '<button class="build-run-row '+(r.id===selectedBuildRunId?'selected':'')+'" data-build-run-id="'+esc(r.id)+'">'+
+      '<span class="build-run-status-icon '+status+'">'+buildStatusIcon(status)+'</span>'+
+      '<span class="build-run-main"><strong>'+esc(r.title||'Build APK')+' #'+esc(r.number||'')+'</strong><span>'+esc((current.originalName||current.id).replace(/\.apk$/i,''))+' · '+esc(r.currentStep||r.status||'queued')+'</span></span>'+
+      '<span class="build-run-meta"><span class="build-run-source">'+esc(source)+'</span><span>'+esc(current.platform==='android'?(signingInfo.configured?'Original signing key':'APK Studio signing key'):(current.platform||'package'))+'</span></span>'+
+      '<span class="build-run-time"><span>'+esc(date)+'</span><span>'+esc(duration)+'</span></span>'+
+    '</button>';
+  }).join(''):'<div class="build-run-empty">No matching build runs.</div>';
+
+  document.querySelectorAll('[data-build-run-id]').forEach(el=>el.onclick=()=>{
+    selectedBuildRunId=el.dataset.buildRunId||'';
+    selectedBuildStepId='';
+    renderBuildActions();
+  });
+
+  const selected=runs.find(r=>r.id===selectedBuildRunId)||runs[0];
+  const selectedStatus=normalizeRunStatus(selected?.status);
+  $('buildDetailTitle').textContent=selected?((selected.title||'Build APK')+' #'+selected.number):'Build';
+  $('buildDetailMeta').textContent=selected
+    ? (current.originalName||current.id)+' · '+(selected.currentStep||selected.status||'queued')
+    : 'No build selected';
+  $('buildDetailStatus').textContent=buildStatusIcon(selectedStatus)+' '+selectedStatus;
+  $('buildDetailStatus').className='build-detail-status '+selectedStatus;
+  $('buildJobTitle').textContent=selected?.title||'Build';
+
+  const steps=selected?.steps||[];
+  if(!selectedBuildStepId){
+    selectedBuildStepId=(steps.find(s=>s.status==='in_progress')||steps.find(s=>s.status==='failed')||steps[0])?.id||'';
+  }
+  let selectedStep=steps.find(s=>s.id===selectedBuildStepId);
+  if(!selectedStep&&steps[0]){selectedStep=steps[0];selectedBuildStepId=selectedStep.id}
+
+  $('buildSteps').innerHTML=steps.length?steps.map(step=>
+    '<button class="workflow-step '+(step.id===selectedBuildStepId?'selected':'')+'" data-build-step="'+esc(step.id)+'">'+
+      '<span class="workflow-step-icon '+esc(step.status||'queued')+'">'+stepIcon(step.status||'queued')+'</span>'+
+      '<span class="workflow-step-text"><strong>'+esc(step.name||step.id)+'</strong><span>'+esc((step.status||'queued').replaceAll('_',' '))+'</span></span>'+
+    '</button>'
+  ).join(''):'<div class="build-run-empty">No steps yet.</div>';
+
+  document.querySelectorAll('[data-build-step]').forEach(el=>el.onclick=()=>{
+    selectedBuildStepId=el.dataset.buildStep||'';
+    renderBuildActions();
+  });
+
+  loadSelectedBuildStepLog(selected,selectedStep);
+
+  const latest=runs[0];
+  const isLatest=!!selected&&!!latest&&selected.id===latest.id;
+  if(isLatest && current.buildArtifact && current.buildStatus!=='error'){
+    $('apkArtifact').classList.remove('hidden');
+    $('apkArtifact').href=(activeProjectBase||API)+'/api/projects/'+current.id+'/apk';
+    $('artifactName').textContent=current.buildSigned?'app-rebuilt-signed.apk':'app-rebuilt.apk';
+    $('artifactStatus').textContent=current.buildSigned?'Signed APK ready to install':'Rebuilt package';
+  }else{
+    $('apkArtifact').classList.add('hidden');
+  }
 }
 function buildStatusIcon(status){
   if(status==='ready')return '✓';
   if(status==='error')return '!';
   if(status==='building')return '•';
   return '○';
-}
-function renderBuildActions(){
-  if(!current)return;
-  const runs=buildRunSegments();
-  const q=($('buildRunSearch')?.value||'').trim().toLowerCase();
-  const filtered=runs.filter(r=>('build apk #'+r.number+' '+r.status+' '+r.stage).toLowerCase().includes(q));
-  $('buildRunCount').textContent=runs.length+' workflow run'+(runs.length===1?'':'s');
-
-  if(selectedBuildRunIndex>=runs.length)selectedBuildRunIndex=0;
-  $('buildRuns').innerHTML=filtered.length?filtered.map((r,visibleIndex)=>{
-    const actualIndex=runs.indexOf(r);
-    const source=activeProjectBase===LOCAL_API?'This computer':'Cloud';
-    const duration=r.latest&&current.buildStartedAt&&r.status==='building'
-      ? Math.max(0,Math.floor((Date.now()-new Date(current.buildStartedAt).getTime())/1000))+'s'
-      : (r.status==='ready'?'completed':r.status);
-    return '<button class="build-run-row '+(actualIndex===selectedBuildRunIndex?'selected':'')+'" data-build-run="'+actualIndex+'">'+
-      '<span class="build-run-status-icon '+esc(r.status)+'">'+buildStatusIcon(r.status)+'</span>'+
-      '<span class="build-run-main"><strong>Build APK #'+r.number+'</strong><span>'+esc((current.originalName||current.id).replace(/\.apk$/i,''))+' · '+esc(r.stage||r.status)+'</span></span>'+
-      '<span class="build-run-meta"><span class="build-run-source">'+esc(source)+'</span><span>'+esc(signingInfo.configured?'Original signing key':'APK Studio signing key')+'</span></span>'+
-      '<span class="build-run-time"><span>'+esc(r.time||'Latest run')+'</span><span>'+esc(duration)+'</span></span>'+
-    '</button>';
-  }).join(''):'<div class="build-run-empty">No matching build runs.</div>';
-
-  document.querySelectorAll('[data-build-run]').forEach(el=>el.onclick=()=>{
-    selectedBuildRunIndex=Number(el.dataset.buildRun)||0;
-    renderBuildActions();
-  });
-
-  const selected=runs[selectedBuildRunIndex]||runs[0];
-  const status=selected?.status||'idle';
-  $('buildDetailTitle').textContent=selected?'Build APK #'+selected.number:'Build APK';
-  $('buildDetailMeta').textContent=selected
-    ? (current.originalName||current.id)+' · '+(selected.stage||status)+(selected.time?' · '+selected.time:'')
-    : 'No build selected';
-  $('buildDetailStatus').textContent=buildStatusIcon(status)+' '+status;
-  $('buildDetailStatus').className='build-detail-status '+status;
-
-  const isLatest=!!selected?.latest;
-  $('logTitle').textContent='Build log';
-  $('logSubtitle').textContent=status==='building'?'live output':'run output';
-  $('buildLog').textContent=selected?.log||'No build output yet.';
-
-  if(isLatest && current.buildArtifact && current.buildStatus!=='error'){
-    $('apkArtifact').classList.remove('hidden');
-    $('apkArtifact').href=(activeProjectBase||API)+'/api/projects/'+current.id+'/apk';
-    $('artifactName').textContent=current.buildSigned?'app-rebuilt-signed.apk':'app-rebuilt.apk';
-    $('artifactStatus').textContent=current.buildSigned?'Signed APK ready to install':'Rebuilt APK';
-  }else{
-    $('apkArtifact').classList.add('hidden');
-  }
 }
 function renderProject(){
   $('repoStatus').textContent='● '+current.status;$('repoStatus').className='project-status '+current.status;
@@ -872,7 +934,7 @@ async function build(){
     current.buildStatus='building';
     current.buildStage=d.stage||current.buildStage||'queued';
     current.buildStartedAt=current.buildStartedAt||new Date().toISOString();
-    selectedBuildRunIndex=0;
+    selectedBuildRunIndex=0;selectedBuildRunId=d.run?.id||'';selectedBuildStepId='';
     switchSection('build');
     renderProject();
     clearInterval(pollTimer);
