@@ -4,10 +4,10 @@ import multer from 'multer';
 import fs from 'fs-extra';
 import path from 'node:path';
 import {fileURLToPath} from 'node:url';
+import {createRequire} from 'node:module';
 import os from 'node:os';
 import crypto from 'node:crypto';
 import archiver from 'archiver';
-import AdmZip from 'adm-zip';
 import { spawn } from 'node:child_process';
 import {ROOT,init,projectDir,safeJoin,readMeta,writeMeta,listDir} from './lib.mjs';
 import {decompile,rebuild,ensureAutomaticSigningKey} from './tasks.mjs';
@@ -23,6 +23,8 @@ const githubClientId=process.env.GITHUB_CLIENT_ID||'';
 const githubClientSecret=process.env.GITHUB_CLIENT_SECRET||'';
 const publicOrigin=process.env.PUBLIC_ORIGIN||'https://apk-website-sable.vercel.app';
 const cloudRoot=path.dirname(fileURLToPath(import.meta.url));
+const require=createRequire(import.meta.url);
+const sevenZipPath=require('7zip-bin').path7za;
 const AGENT_VERSION='1.3.2';
 app.use(cors({origin:true}));
 app.use((req,_res,next)=>{ console.log(new Date().toISOString(), req.method, req.url); next(); });
@@ -626,31 +628,39 @@ app.post('/api/remote-build',remoteWorkspaceUpload.single('workspace'),async(req
     const dir=projectDir(id);
     await fs.ensureDir(dir);
 
-    const zip=new AdmZip(uploadPath);
-    const allowedRootPrefixes=['editable/'];
-    const allowedFiles=new Set([
+    const staging=path.join(os.tmpdir(),'apk-studio-remote-extract-'+id);
+    await fs.remove(staging).catch(()=>{});
+    await fs.ensureDir(staging);
+
+    await new Promise((resolve,reject)=>{
+      const p=spawn(sevenZipPath,['x','-y',uploadPath,'-o'+staging],{shell:false});
+      let out='',err='';
+      p.stdout.on('data',d=>out+=d.toString());
+      p.stderr.on('data',d=>err+=d.toString());
+      p.on('error',reject);
+      p.on('close',code=>code===0?resolve():reject(new Error((err||out||('7zip exit '+code)).slice(-4000))));
+    });
+
+    const editableSrc=path.join(staging,'editable');
+    if(!await fs.pathExists(editableSrc)){
+      await fs.remove(staging).catch(()=>{});
+      throw new Error('Workspace ZIP does not contain an editable project');
+    }
+
+    await fs.copy(editableSrc,path.join(dir,'editable'),{overwrite:true});
+
+    for(const name of [
       'project.json',
       'signing-config.json',
       'user-signing.keystore',
       'automatic-signing.json',
       'apkstudio-signing.jks'
-    ]);
-
-    for(const entry of zip.getEntries()){
-      if(entry.isDirectory)continue;
-      const raw=String(entry.entryName||'').replace(/\\/g,'/');
-      const clean=path.posix.normalize('/'+raw).slice(1);
-      if(!clean||clean.startsWith('..')||path.isAbsolute(clean))continue;
-      const allowed=allowedFiles.has(clean)||allowedRootPrefixes.some(p=>clean.startsWith(p));
-      if(!allowed)continue;
-      const dest=safeJoin(dir,clean);
-      await fs.ensureDir(path.dirname(dest));
-      await fs.writeFile(dest,entry.getData());
+    ]){
+      const src=path.join(staging,name);
+      if(await fs.pathExists(src))await fs.copy(src,path.join(dir,name),{overwrite:true});
     }
 
-    if(!await fs.pathExists(path.join(dir,'editable'))){
-      throw new Error('Workspace ZIP does not contain an editable project');
-    }
+    await fs.remove(staging).catch(()=>{});
 
     const originalMeta=await fs.readJson(path.join(dir,'project.json')).catch(()=>({}));
     const meta={
