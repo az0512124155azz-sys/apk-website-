@@ -297,6 +297,7 @@ let projects=[],current=null,root='editable',dir='',selected='',saved='',pollTim
 let lastProgressDone=null,lastProgressChangedAt=0,recoveryRequested=false;
 let githubSession={connected:false,user:null},githubProjects=[];
 let signingInfo={mode:'apkstudio',configured:false,automaticReady:false};
+let selectedBuildRunIndex=0;
 
 const rootMeta={
  editable:{title:'Rebuildable APK',hint:'Manifest, resources and Smali'},
@@ -712,6 +713,96 @@ function progressFromLog(log=''){
   let last=null;const re=/progress:\s*(\d+)\s+of\s+(\d+).*?\((\d+)%\)/g;let m;while((m=re.exec(log)))last={done:+m[1],total:+m[2],pct:+m[3]};
   return last;
 }
+function buildRunSegments(){
+  const full=current?.log||'';
+  const marker='=== BUILD START ===';
+  const parts=full.split(marker);
+  const segments=parts.length>1?parts.slice(1):[];
+  const out=segments.map((log,i)=>{
+    const isLatest=i===segments.length-1;
+    let status='ready';
+    if(/BUILD ERROR:/i.test(log))status='error';
+    else if(isLatest&&current?.buildStatus==='building')status='building';
+    else if(isLatest&&current?.buildStatus==='error')status='error';
+    else if(isLatest&&current?.buildStatus==='ready')status='ready';
+    else if(!/APK signature verified|No source changes detected|signed APK|jar verified/i.test(log))status='ready';
+
+    const time=(log.match(/\[(\d{2}:\d{2}:\d{2})\]/)||[])[1]||'';
+    const stage=isLatest?(current?.buildStage||status):status;
+    return {
+      index:i,
+      number:i+1,
+      log:log.trim(),
+      status,
+      stage,
+      time,
+      latest:isLatest
+    };
+  });
+  if(!out.length && current){
+    out.push({
+      index:0,number:1,log:current.log||'',status:current.buildStatus||'idle',
+      stage:current.buildStage||current.buildStatus||'idle',time:'',latest:true
+    });
+  }
+  return out.reverse();
+}
+function buildStatusIcon(status){
+  if(status==='ready')return '✓';
+  if(status==='error')return '!';
+  if(status==='building')return '•';
+  return '○';
+}
+function renderBuildActions(){
+  if(!current)return;
+  const runs=buildRunSegments();
+  const q=($('buildRunSearch')?.value||'').trim().toLowerCase();
+  const filtered=runs.filter(r=>('build apk #'+r.number+' '+r.status+' '+r.stage).toLowerCase().includes(q));
+  $('buildRunCount').textContent=runs.length+' workflow run'+(runs.length===1?'':'s');
+
+  if(selectedBuildRunIndex>=runs.length)selectedBuildRunIndex=0;
+  $('buildRuns').innerHTML=filtered.length?filtered.map((r,visibleIndex)=>{
+    const actualIndex=runs.indexOf(r);
+    const source=activeProjectBase===LOCAL_API?'This computer':'Cloud';
+    const duration=r.latest&&current.buildStartedAt&&r.status==='building'
+      ? Math.max(0,Math.floor((Date.now()-new Date(current.buildStartedAt).getTime())/1000))+'s'
+      : (r.status==='ready'?'completed':r.status);
+    return '<button class="build-run-row '+(actualIndex===selectedBuildRunIndex?'selected':'')+'" data-build-run="'+actualIndex+'">'+
+      '<span class="build-run-status-icon '+esc(r.status)+'">'+buildStatusIcon(r.status)+'</span>'+
+      '<span class="build-run-main"><strong>Build APK #'+r.number+'</strong><span>'+esc((current.originalName||current.id).replace(/\.apk$/i,''))+' · '+esc(r.stage||r.status)+'</span></span>'+
+      '<span class="build-run-meta"><span class="build-run-source">'+esc(source)+'</span><span>'+esc(signingInfo.configured?'Original signing key':'APK Studio signing key')+'</span></span>'+
+      '<span class="build-run-time"><span>'+esc(r.time||'Latest run')+'</span><span>'+esc(duration)+'</span></span>'+
+    '</button>';
+  }).join(''):'<div class="build-run-empty">No matching build runs.</div>';
+
+  document.querySelectorAll('[data-build-run]').forEach(el=>el.onclick=()=>{
+    selectedBuildRunIndex=Number(el.dataset.buildRun)||0;
+    renderBuildActions();
+  });
+
+  const selected=runs[selectedBuildRunIndex]||runs[0];
+  const status=selected?.status||'idle';
+  $('buildDetailTitle').textContent=selected?'Build APK #'+selected.number:'Build APK';
+  $('buildDetailMeta').textContent=selected
+    ? (current.originalName||current.id)+' · '+(selected.stage||status)+(selected.time?' · '+selected.time:'')
+    : 'No build selected';
+  $('buildDetailStatus').textContent=buildStatusIcon(status)+' '+status;
+  $('buildDetailStatus').className='build-detail-status '+status;
+
+  const isLatest=!!selected?.latest;
+  $('logTitle').textContent='Build log';
+  $('logSubtitle').textContent=status==='building'?'live output':'run output';
+  $('buildLog').textContent=selected?.log||'No build output yet.';
+
+  if(isLatest && current.buildArtifact && current.buildStatus!=='error'){
+    $('apkArtifact').classList.remove('hidden');
+    $('apkArtifact').href=(activeProjectBase||API)+'/api/projects/'+current.id+'/apk';
+    $('artifactName').textContent=current.buildSigned?'app-rebuilt-signed.apk':'app-rebuilt.apk';
+    $('artifactStatus').textContent=current.buildSigned?'Signed APK ready to install':'Rebuilt APK';
+  }else{
+    $('apkArtifact').classList.add('hidden');
+  }
+}
 function renderProject(){
   $('repoStatus').textContent='● '+current.status;$('repoStatus').className='project-status '+current.status;
   const ready=current.status==='ready';
@@ -728,28 +819,7 @@ function renderProject(){
     ['File',current.originalName],['Status',current.status],['Stage',current.stage||'—'],['Size',bytes(current.size||0)],
     ['JADX exit code',current.jadxExitCode??'—'],['Decoded files',current.editableFileCount??'—']
   ].map(x=>'<div><span>'+esc(x[0])+'</span><strong>'+esc(x[1])+'</strong></div>').join('');
-  const buildState=current.buildStatus||'idle';
-  const buildStage=current.buildStage||buildState;
-  const buildElapsed=current.buildStartedAt&&buildState==='building'?Math.max(0,Math.floor((Date.now()-new Date(current.buildStartedAt).getTime())/1000)):null;
-  $('buildTable').innerHTML='<div><span>APK rebuild</span><span class="project-status '+esc(buildState)+'">● '+esc(buildState)+(buildState==='building'?' · '+esc(buildStage)+(buildElapsed!==null?' · '+buildElapsed+'s':''):'')+'</span><code>'+esc(current.buildError||'')+'</code></div>';
-  const buildMarker='=== BUILD START ===';
-  const fullLog=current.log||'';
-  const hasBuild=fullLog.includes(buildMarker);
-  if(hasBuild){
-    $('logTitle').textContent='Build log';
-    $('logSubtitle').textContent='live output';
-    $('buildLog').textContent=fullLog.split(buildMarker).pop().trim()||'Build started…';
-  }else{
-    $('logTitle').textContent=ready?'Processing log':'Decompile log';
-    $('logSubtitle').textContent=ready?'completed output':'live output';
-    $('buildLog').textContent=fullLog||'Waiting for processor output…';
-  }
-  if(current.buildArtifact && current.buildStatus!=='error'){
-    $('apkArtifact').classList.remove('hidden');
-    $('apkArtifact').href=API+'/api/projects/'+current.id+'/apk';
-    $('artifactName').textContent=current.buildSigned?'app-rebuilt-signed.apk':'app-rebuilt.apk';
-    $('artifactStatus').textContent=current.buildSigned?'Signed APK ready to install':'Rebuilt APK';
-  }else $('apkArtifact').classList.add('hidden');
+  renderBuildActions();
 }
 function setRoot(r){root=r;dir='';selected='';$('rootTitle').textContent=rootMeta[r].title;$('rootHint').textContent=rootMeta[r].hint;$('rootCrumb').textContent=rootMeta[r].title;$('statusRoot').textContent=rootMeta[r].title;document.querySelectorAll('#rootMenu button').forEach(b=>b.classList.toggle('selected',b.dataset.root===r));$('rootMenu').classList.add('hidden');$('editor').classList.add('hidden');$('editorEmpty').classList.remove('hidden');$('saveFile').disabled=true;loadDir()}
 async function loadDir(){
@@ -780,6 +850,7 @@ async function build(){
     current.buildStatus='building';
     current.buildStage=d.stage||current.buildStage||'queued';
     current.buildStartedAt=current.buildStartedAt||new Date().toISOString();
+    selectedBuildRunIndex=0;
     switchSection('build');
     renderProject();
     clearInterval(pollTimer);
@@ -896,7 +967,7 @@ async function openVsCode(){
     setTimeout(()=>{if(confirm('If VS Code did not open, install the APK Studio VS Code Helper now?'))location.href='/install-vscode-helper.ps1'},1400);
   }catch(e){alert('Open in VS Code failed: '+e.message)}
 }
-function switchSection(s){document.querySelectorAll('.repo-nav button').forEach(b=>b.classList.toggle('active',b.dataset.section===s));$('codeSection').classList.toggle('hidden',s!=='code');$('analysisSection').classList.toggle('hidden',s!=='analysis');$('buildSection').classList.toggle('hidden',s!=='build')}
+function switchSection(s){document.querySelectorAll('.repo-nav button').forEach(b=>b.classList.toggle('active',b.dataset.section===s));$('codeSection').classList.toggle('hidden',s!=='code');$('analysisSection').classList.toggle('hidden',s!=='analysis');$('buildSection').classList.toggle('hidden',s!=='build');if(s==='build'&&current)renderBuildActions()}
 
 $('retryLocalAgent').onclick=()=>retryLocalAgent();
 $('chooseCloud').onclick=()=>setProcessorMode('cloud');
@@ -919,6 +990,10 @@ $('projectSearch').oninput=renderProjects;$('backProjects').onclick=goHome;$('ba
 $('rootPicker').onclick=()=>$('rootMenu').classList.toggle('hidden');document.querySelectorAll('#rootMenu button').forEach(b=>b.onclick=()=>setRoot(b.dataset.root));
 $('refreshTree').onclick=loadDir;$('saveFile').onclick=saveFile;$('editor').oninput=()=>{const dirty=$('editor').value!==saved;$('dirtyState').textContent=dirty?'● Unsaved':'';$('saveFile').disabled=!dirty||root!=='editable'};
 $('buildTop').onclick=build;$('buildPage').onclick=build;
+$('buildRunSearch').oninput=()=>renderBuildActions();
+$('buildAllRuns').onclick=()=>{document.querySelectorAll('.build-side-item').forEach(x=>x.classList.remove('active'));$('buildAllRuns').classList.add('active');$('buildRunSearch').value='';renderBuildActions()};
+$('buildWorkflow').onclick=()=>{document.querySelectorAll('.build-side-item').forEach(x=>x.classList.remove('active'));$('buildWorkflow').classList.add('active');$('buildRunSearch').value='Build APK';renderBuildActions()};
+$('buildSigningNav').onclick=()=>{document.querySelectorAll('.build-side-item').forEach(x=>x.classList.remove('active'));$('buildSigningNav').classList.add('active');$('signingForm').classList.remove('hidden');$('configureSigning').scrollIntoView({behavior:'smooth',block:'center'})};
 $('configureSigning').onclick=()=>$('signingForm').classList.remove('hidden');
 $('cancelSigning').onclick=()=>$('signingForm').classList.add('hidden');
 $('saveSigning').onclick=()=>saveSigningKey();
