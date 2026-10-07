@@ -40,7 +40,7 @@ html,body{background:#0d1117;color:#e6edf3;margin:0}.hidden{display:none!importa
     <div id="localModeHelp" class="mode-local-help hidden">
       <strong id="localInstallTitle">Preparing automatic installation…</strong>
       <span id="localInstallText">APK Studio will download the Local Agent installer and wait for it to start.</span>
-      <div style="margin-top:8px"><a id="localInstallerLink" href="/install-local-agent.cmd" download>Download installer again</a></div>
+      <div style="margin-top:8px;display:flex;gap:8px;align-items:center"><button class="button" id="retryLocalAgent">Retry Local Agent</button><a id="localInstallerLink" href="/install-local-agent.cmd" download>Reinstall Local Agent</a></div>
     </div>
     <div class="mode-note">You can change this later from the processor button in the top bar.</div>
   </div>
@@ -237,10 +237,12 @@ async function api(path,opts={}){
 function isDesktopComputer(){
   return !/Android|iPhone|iPad|iPod|Mobile/i.test(navigator.userAgent)&&window.innerWidth>=760;
 }
-async function wakeLocalAgent(){
-  try{
-    location.href='apkstudiolocal://start';
-  }catch{}
+async function wakeLocalAgent({explicit=false}={}){
+  if(!explicit)return false;
+  const last=Number(localStorage.getItem('apkstudio_last_manual_wake')||0);
+  if(Date.now()-last<15000)return false;
+  localStorage.setItem('apkstudio_last_manual_wake',String(Date.now()));
+  try{location.href='apkstudiolocal://start';return true}catch{return false}
 }
 function versionParts(v){return String(v||'0').split('.').map(x=>parseInt(x,10)||0)}
 function versionLt(a,b){
@@ -276,10 +278,6 @@ async function ensureLocalAgentCurrent(){
       }
     }catch{}
 
-    if(!sessionStorage.getItem('apkstudio_agent_update_downloaded')){
-      sessionStorage.setItem('apkstudio_agent_update_downloaded','1');
-      const a=document.createElement('a');a.href='/install-local-agent.cmd';a.download='APK-Studio-Local-Agent-Update.cmd';a.style.display='none';document.body.appendChild(a);a.click();a.remove();
-    }
     $('cloudState').textContent='● local processor update required';$('cloudState').className='cloud-state bad';
     return false;
   }catch{return false}
@@ -303,8 +301,7 @@ function startLocalReconnectWatcher(){
     if(ok){
       $('cloudState').textContent='● local processor online';$('cloudState').className='cloud-state ok';
     }else{
-      $('cloudState').textContent='● reconnecting to this computer…';$('cloudState').className='cloud-state';
-      wakeLocalAgent();
+      $('cloudState').textContent='● local processor offline';$('cloudState').className='cloud-state bad';
     }
   },5000);
 }
@@ -370,8 +367,25 @@ async function setProcessorMode(mode,{close=true}={}){
   await loadProjects();
   return true;
 }
+async function retryLocalAgent(){
+  if(processorMode!=='local')return;
+  $('cloudState').textContent='● checking local processor…';$('cloudState').className='cloud-state';
+  await wakeLocalAgent({explicit:true});
+  for(let i=0;i<8;i++){
+    await new Promise(r=>setTimeout(r,1000));
+    if(await probeLocalAgent(1200)){
+      $('cloudState').textContent='● local processor online';$('cloudState').className='cloud-state ok';
+      await loadProjects();
+      return true;
+    }
+  }
+  $('cloudState').textContent='● local processor offline';$('cloudState').className='cloud-state bad';
+  return false;
+}
 function showProcessorModeDialog(){
-  $('localModeHelp').classList.add('hidden');
+  $('localModeHelp').classList.remove('hidden');
+  $('localInstallTitle').textContent=processorMode==='local'?'Local processor is offline':'Local processing';
+  $('localInstallText').textContent=processorMode==='local'?'Nothing will be opened automatically. Use Retry once, or reinstall the Local Agent if needed.':'Choose This computer to install the Local Agent.';
   $('processorModeOverlay').classList.remove('hidden');
 }
 async function checkProcessor(){
@@ -383,9 +397,8 @@ async function checkProcessor(){
     return true;
   }catch(e){
     if(processorMode==='local'){
-      $('cloudState').textContent='● reconnecting to this computer…';
-      wakeLocalAgent();
-      $('cloudState').className='cloud-state';
+      $('cloudState').textContent='● local processor offline';
+      $('cloudState').className='cloud-state bad';
       for(let i=0;i<5;i++){
         await new Promise(r=>setTimeout(r,1000));
         if(await probeLocalAgent(1200)){
@@ -712,6 +725,7 @@ async function openVsCode(){
 }
 function switchSection(s){document.querySelectorAll('.repo-nav button').forEach(b=>b.classList.toggle('active',b.dataset.section===s));$('codeSection').classList.toggle('hidden',s!=='code');$('analysisSection').classList.toggle('hidden',s!=='analysis');$('buildSection').classList.toggle('hidden',s!=='build')}
 
+$('retryLocalAgent').onclick=()=>retryLocalAgent();
 $('chooseCloud').onclick=()=>setProcessorMode('cloud');
 $('chooseLocal').onclick=()=>setProcessorMode('local');
 $('modeButtonProjects').onclick=showProcessorModeDialog;
@@ -750,12 +764,8 @@ window.addEventListener('keydown',e=>{if((e.ctrlKey||e.metaKey)&&e.key.toLowerCa
     }
   }else{
     API=processorMode==='local'?LOCAL_API:CLOUD_API;
-    if(processorMode==='local' && !(await probeLocalAgent(1500))){
-      wakeLocalAgent();
-      for(let i=0;i<6;i++){
-        await new Promise(r=>setTimeout(r,800));
-        if(await probeLocalAgent(1200))break;
-      }
+    if(processorMode==='local'){
+      await probeLocalAgent(1500);
     }
   }
   renderProcessorMode();
