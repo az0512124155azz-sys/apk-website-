@@ -3,6 +3,7 @@ import cors from 'cors';
 import multer from 'multer';
 import fs from 'fs-extra';
 import path from 'node:path';
+import {fileURLToPath} from 'node:url';
 import os from 'node:os';
 import crypto from 'node:crypto';
 import archiver from 'archiver';
@@ -20,6 +21,7 @@ const sessionSecret=process.env.SESSION_SECRET||'apk-studio-dev-secret-change-me
 const githubClientId=process.env.GITHUB_CLIENT_ID||'';
 const githubClientSecret=process.env.GITHUB_CLIENT_SECRET||'';
 const publicOrigin=process.env.PUBLIC_ORIGIN||'https://apk-website-sable.vercel.app';
+const cloudRoot=path.dirname(fileURLToPath(import.meta.url));
 const AGENT_VERSION='1.3.1';
 app.use(cors({origin:true}));
 app.use((req,_res,next)=>{ console.log(new Date().toISOString(), req.method, req.url); next(); });
@@ -311,6 +313,50 @@ async function ensureProjectAvailable(req,id){
   }
   return restored;
 }
+
+app.post('/api/signing/bootstrap',async(_req,res,next)=>{
+  const tempDir=await fs.mkdtemp(path.join(os.tmpdir(),'apkstudio-auto-key-'));
+  try{
+    const alias='apkstudio';
+    const secret=crypto.randomBytes(24).toString('base64url');
+    const keystore=path.join(tempDir,'apkstudio-automatic.jks');
+    const bundled=path.join(cloudRoot,'.tools','java','bin',process.platform==='win32'?'keytool.exe':'keytool');
+    const keytool=await fs.pathExists(bundled)?bundled:(process.platform==='win32'?'keytool.exe':'keytool');
+
+    await new Promise((resolve,reject)=>{
+      const p=spawn(keytool,[
+        '-genkeypair',
+        '-storetype','JKS',
+        '-keystore',keystore,
+        '-storepass',secret,
+        '-keypass',secret,
+        '-alias',alias,
+        '-keyalg','RSA',
+        '-keysize','2048',
+        '-validity','10000',
+        '-dname','CN=APK Studio Automatic Signing,O=APK Studio,C=US',
+        '-noprompt'
+      ],{shell:false,windowsHide:true});
+      let out='',err='';
+      p.stdout.on('data',d=>out+=d.toString());
+      p.stderr.on('data',d=>err+=d.toString());
+      p.on('error',reject);
+      p.on('close',code=>code===0?resolve():reject(new Error((err||out||('keytool exit '+code)).slice(-4000))));
+    });
+
+    const data=(await fs.readFile(keystore)).toString('base64');
+    res.setHeader('Cache-Control','no-store, max-age=0');
+    res.json({
+      ok:true,
+      fileName:'apkstudio-automatic.jks',
+      alias,
+      storePass:secret,
+      keyPass:secret,
+      data
+    });
+  }catch(e){next(e)}
+  finally{await fs.remove(tempDir).catch(()=>{})}
+});
 
 app.get('/',(_req,res)=>res.json({name:'APK Studio Processor',ok:true,version:AGENT_VERSION,local:process.env.LOCAL_PROCESSOR==='1'}));
 app.get('/health',async(_req,res)=>{
