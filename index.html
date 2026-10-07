@@ -814,7 +814,7 @@ async function deleteProject(id){if(!confirm('Delete this project?'))return;try{
 async function openProject(id){
   clearInterval(pollTimer);
   signingInfo={mode:'apkstudio',configured:false,automaticReady:false};
-  selectedBuildRunId='';selectedBuildStepId='';buildDetailMode=false;
+  selectedBuildRunId='';selectedBuildStepId='';buildDetailMode=false;buildRunTab='summary';buildManagementMode='runs';
   const listed=projects.find(p=>p.id===id);
   activeProjectBase=listed?listed._base:'';
   if(activeProjectBase===LOCAL_API){
@@ -833,7 +833,7 @@ async function openProject(id){
   $('buildPage').textContent=$('buildTop').textContent;
   $('buildWorkflow').innerHTML='<span>⚒</span>'+(platform==='android'?'Build APK':platform==='windows'?'Build Windows':'Build Linux');
   $('buildSigningNav').classList.toggle('hidden',platform!=='android');
-  $('signingPanel').classList.toggle('hidden',platform!=='android');
+  if(platform!=='android')buildManagementMode='runs';
   $('zipLink').href=(activeProjectBase||API)+'/api/projects/'+id+'/download';
   renderProject();dir='';selected='';setRoot('editable');loadDir();
   await loadSigningStatus();
@@ -1144,7 +1144,7 @@ async function build(){
     if(d.run)current.buildRuns=[d.run,...((current.buildRuns||[]).filter(r=>r.id!==d.run.id))];
     current.buildStage=d.stage||current.buildStage||'queued';
     current.buildStartedAt=current.buildStartedAt||new Date().toISOString();
-    selectedBuildRunIndex=0;selectedBuildRunId=d.run?.id||'';selectedBuildStepId='';buildDetailMode=true;
+    selectedBuildRunIndex=0;selectedBuildRunId=d.run?.id||'';selectedBuildStepId='';buildDetailMode=true;buildRunTab='summary';buildManagementMode='runs';
     switchSection('build');
     renderProject();
     clearInterval(pollTimer);
@@ -1155,12 +1155,11 @@ async function loadSigningStatus(){
   if(!current)return;
   if((current.platform||'android')!=='android'){
     signingInfo={mode:'none',configured:false,automaticReady:true};
-    $('signingPanel').classList.add('hidden');
+    $('signingManagement').classList.add('hidden');
     $('buildSigningNav').classList.add('hidden');
     renderProject();
     return;
   }
-  $('signingPanel').classList.remove('hidden');
   $('buildSigningNav').classList.remove('hidden');
   try{
     signingInfo=await api('/api/projects/'+current.id+'/signing',{timeout:15000});
@@ -1212,12 +1211,14 @@ async function loadSigningStatus(){
       : (signingInfo.automaticReady?'Automatic ✅ · APK Studio key ready':'Automatic · preparing APK Studio key…');
     $('removeSigning').classList.toggle('hidden',!signingInfo.configured);
     $('configureSigning').textContent='Advanced';
+    renderSigningManagement();
     renderProject();
   }catch(e){
     signingInfo={mode:'apkstudio',configured:false,automaticReady:false};
     $('signingStatus').textContent='Signing key unavailable: '+String(e.message||e).slice(0,180);
     $('buildTop').disabled=true;
     $('buildPage').disabled=true;
+    renderSigningManagement();
   }
 }
 async function saveSigningKey(){
@@ -1316,10 +1317,13 @@ $('rootPicker').onclick=()=>$('rootMenu').classList.toggle('hidden');document.qu
 $('refreshTree').onclick=loadDir;$('saveFile').onclick=saveFile;$('editor').oninput=()=>{const dirty=$('editor').value!==saved;$('dirtyState').textContent=dirty?'● Unsaved':'';$('saveFile').disabled=!dirty||root!=='editable'};
 $('buildTop').onclick=build;$('buildPage').onclick=build;
 $('buildRunSearch').oninput=()=>renderBuildActions();
-$('buildRunBack').onclick=()=>{buildDetailMode=false;selectedBuildStepId='';renderBuildActions()};
-$('buildAllRuns').onclick=()=>{document.querySelectorAll('.build-side-item').forEach(x=>x.classList.remove('active'));$('buildAllRuns').classList.add('active');$('buildRunSearch').value='';buildDetailMode=false;renderBuildActions()};
-$('buildWorkflow').onclick=()=>{document.querySelectorAll('.build-side-item').forEach(x=>x.classList.remove('active'));$('buildWorkflow').classList.add('active');$('buildRunSearch').value=current?.platform==='windows'?'Build Windows':current?.platform==='linux'?'Build Linux':'Build APK';buildDetailMode=false;renderBuildActions()};
-$('buildSigningNav').onclick=()=>{document.querySelectorAll('.build-side-item').forEach(x=>x.classList.remove('active'));$('buildSigningNav').classList.add('active');$('signingForm').classList.remove('hidden');$('configureSigning').scrollIntoView({behavior:'smooth',block:'center'})};
+$('runSummaryNav').onclick=()=>{buildRunTab='summary';setRunTab('summary')};
+$('runJobNav').onclick=()=>{buildRunTab='job';setRunTab('job')};
+$('runGraphJob').onclick=()=>{buildRunTab='job';setRunTab('job')};
+$('buildRunBack').onclick=()=>{buildManagementMode='runs';buildDetailMode=false;buildRunTab='summary';selectedBuildStepId='';renderBuildActions()};
+$('buildAllRuns').onclick=()=>{document.querySelectorAll('.build-side-item').forEach(x=>x.classList.remove('active'));$('buildAllRuns').classList.add('active');$('buildRunSearch').value='';buildManagementMode='runs';buildDetailMode=false;buildRunTab='summary';renderBuildActions()};
+$('buildWorkflow').onclick=()=>{document.querySelectorAll('.build-side-item').forEach(x=>x.classList.remove('active'));$('buildWorkflow').classList.add('active');$('buildRunSearch').value=current?.platform==='windows'?'Build Windows':current?.platform==='linux'?'Build Linux':'Build APK';buildManagementMode='runs';buildDetailMode=false;buildRunTab='summary';renderBuildActions()};
+$('buildSigningNav').onclick=async()=>{document.querySelectorAll('.build-side-item').forEach(x=>x.classList.remove('active'));$('buildSigningNav').classList.add('active');buildManagementMode='signing';buildDetailMode=false;await loadSigningStatus();renderBuildActions()};
 $('configureSigning').onclick=()=>$('signingForm').classList.remove('hidden');
 $('cancelSigning').onclick=()=>$('signingForm').classList.add('hidden');
 $('saveSigning').onclick=()=>saveSigningKey();
