@@ -400,7 +400,7 @@ let signingPreparePromise=null;
 let signingPreparedProjectId='';
 let pendingProjectPlatform='';
 let selectedBuildRunIndex=0,selectedBuildRunId='',selectedBuildStepId='',stepLogRequestSeq=0,buildDetailMode=false,buildRunTab='summary',buildManagementMode='runs';
-let buildClickPromise=null,buildUiBusy=false,clientPrepareRunId='';
+let buildClickPromise=null,buildUiBusy=false,clientPrepareRunId='',remoteBuildProjectId='';
 
 function rootMetaForCurrent(r){
   const platform=current?.platform||'android';
@@ -428,6 +428,17 @@ async function api(path,opts={}){
     const base=path.startsWith('/api/github/')
       ? CLOUD_API
       : (activeProjectBase && path.startsWith('/api/projects/') ? activeProjectBase : API);
+    const r=await fetch(base+path,{...opts,signal:controller.signal,cache:'no-store'});
+    const text=await r.text();let data;try{data=JSON.parse(text)}catch{data={raw:text}}
+    if(!r.ok)throw new Error(data.error||data.raw||('HTTP '+r.status));
+    return data;
+  }finally{clearTimeout(timeout)}
+}
+
+async function apiFromBase(base,path,opts={}){
+  const controller=new AbortController();
+  const timeout=setTimeout(()=>controller.abort(),opts.timeout||30000);
+  try{
     const r=await fetch(base+path,{...opts,signal:controller.signal,cache:'no-store'});
     const text=await r.text();let data;try{data=JSON.parse(text)}catch{data={raw:text}}
     if(!r.ok)throw new Error(data.error||data.raw||('HTTP '+r.status));
@@ -804,6 +815,7 @@ async function deleteProject(id){if(!confirm('Delete this project?'))return;try{
 async function openProject(id){
   clearInterval(pollTimer);
   signingInfo={mode:'apkstudio',configured:false,automaticReady:false};
+  remoteBuildProjectId='';
   signingPreparedProjectId='';
   signingPreparePromise=null;
   selectedBuildRunId='';selectedBuildStepId='';buildDetailMode=false;buildRunTab='summary';buildManagementMode='runs';
@@ -829,10 +841,29 @@ async function openProject(id){
   renderProject();
   pollTimer=setInterval(refreshCurrent,1500);
 }
-function goHome(){clearInterval(pollTimer);current=null;$('workspaceView').classList.add('hidden');$('projectsView').classList.remove('hidden');loadProjects()}
+function goHome(){clearInterval(pollTimer);remoteBuildProjectId='';current=null;$('workspaceView').classList.add('hidden');$('projectsView').classList.remove('hidden');loadProjects()}
 async function refreshCurrent(){
   if(!current)return;
   try{
+    if(current.remoteBuildProjectId||remoteBuildProjectId){
+      const rid=current.remoteBuildProjectId||remoteBuildProjectId;
+      const remote=await apiFromBase(CLOUD_API,'/api/projects/'+rid,{timeout:20000});
+      current.buildStatus=remote.buildStatus;
+      current.buildStage=remote.buildStage;
+      current.buildError=remote.buildError;
+      current.buildArtifact=remote.buildArtifact;
+      current.buildSigned=remote.buildSigned;
+      current.buildRuns=remote.buildRuns||[];
+      current.buildStartedAt=remote.buildStartedAt||current.buildStartedAt;
+      current.buildFinishedAt=remote.buildFinishedAt;
+      current.signingEngine=remote.signingEngine;
+      current.remoteBuildProjectId=rid;
+      renderProject();
+      if(remote.buildStatus!=='building'){
+        clearInterval(pollTimer);
+      }
+      return;
+    }
     const previousStatus=current.status;
     current=await api('/api/projects/'+current.id,{timeout:20000});
     if((current.platform||'android')==='android' && current.status==='ready' && previousStatus!=='ready' && signingPreparedProjectId!==current.id){
@@ -907,7 +938,10 @@ async function fetchBuildStepLog(run,step){
   if(!run||!step)return '';
   if(step.isLegacy)return step.legacyLog||'No output for this step.';
   try{
-    const d=await api('/api/projects/'+current.id+'/build-runs/'+encodeURIComponent(run.id)+'/steps/'+encodeURIComponent(step.id)+'/log',{timeout:15000});
+    const pid=current.remoteBuildProjectId||remoteBuildProjectId||current.id;
+    const d=(current.remoteBuildProjectId||remoteBuildProjectId)
+      ? await apiFromBase(CLOUD_API,'/api/projects/'+pid+'/build-runs/'+encodeURIComponent(run.id)+'/steps/'+encodeURIComponent(step.id)+'/log',{timeout:15000})
+      : await api('/api/projects/'+pid+'/build-runs/'+encodeURIComponent(run.id)+'/steps/'+encodeURIComponent(step.id)+'/log',{timeout:15000});
     if(seq!==stepLogRequestSeq)return null;
     return d.log||'No output yet.';
   }catch(e){
@@ -1015,7 +1049,7 @@ function renderBuildActions(){
   $('runJobPageStatus').className='build-detail-status '+selectedStatus;
   $('runStartedAt').textContent=selected?.startedAt?new Date(selected.startedAt).toLocaleString():'—';
   $('runDuration').textContent=selected?runDuration(selected):'—';
-  $('runProcessor').textContent=activeProjectBase===LOCAL_API?'This computer':'Cloud';
+  $('runProcessor').textContent=(current.remoteBuildProjectId||remoteBuildProjectId)?'Cloud build engine':(activeProjectBase===LOCAL_API?'This computer':'Cloud');
   $('runGraphMeta').textContent=selected?(selected.currentStep||selected.status||'queued'):'Queued';
 
   const dotClass=selected?.status==='completed'?'completed':selected?.status==='failed'?'failed':selected?.status==='in_progress'?'in_progress':'queued';
@@ -1034,7 +1068,9 @@ function renderBuildActions(){
   $('runArtifactsEmpty').classList.toggle('hidden',!!hasArtifact);
   $('apkArtifact').classList.toggle('hidden',!hasArtifact);
   if(hasArtifact){
-    $('apkArtifact').href=(activeProjectBase||API)+'/api/projects/'+current.id+'/apk';
+    const artifactProjectId=current.remoteBuildProjectId||remoteBuildProjectId||current.id;
+    const artifactBase=(current.remoteBuildProjectId||remoteBuildProjectId)?CLOUD_API:(activeProjectBase||API);
+    $('apkArtifact').href=artifactBase+'/api/projects/'+artifactProjectId+'/apk';
     $('artifactName').textContent=current.buildSigned?'app-rebuilt-signed.apk':'app-rebuilt.apk';
     $('artifactStatus').textContent=current.buildSigned?'Signed APK ready to install':'Rebuilt package';
   }
@@ -1161,6 +1197,47 @@ function removeClientPrepareRun(){
   clientPrepareRunId='';
 }
 
+async function startRemoteModernBuildFromLocal(){
+  if(!current)return false;
+  setClientPrepareRun('in_progress','Local Agent '+(localAgentVersion||'old')+' uses the legacy signer. Switching this build to the modern cloud engine…');
+
+  const controller=new AbortController();
+  const timer=setTimeout(()=>controller.abort(),180000);
+  let workspaceBlob;
+  try{
+    const r=await fetch(LOCAL_API+'/api/projects/'+current.id+'/download',{cache:'no-store',signal:controller.signal});
+    if(!r.ok){
+      const t=await r.text();
+      throw new Error(t||('Workspace export HTTP '+r.status));
+    }
+    workspaceBlob=await r.blob();
+  }finally{clearTimeout(timer)}
+
+  setClientPrepareRun('in_progress','Uploading the local workspace to the modern Android builder…');
+
+  const fd=new FormData();
+  fd.append('workspace',workspaceBlob,'apk-studio-workspace.zip');
+  const remote=await apiFromBase(CLOUD_API,'/api/remote-build',{method:'POST',body:fd,timeout:300000});
+  remoteBuildProjectId=remote.id;
+
+  removeClientPrepareRun();
+  current.buildStatus='building';
+  current.buildStage='queued';
+  current.buildStartedAt=new Date().toISOString();
+  current.remoteBuildProjectId=remote.id;
+  current.buildRuns=remote.run?[remote.run]:[];
+  selectedBuildRunId=remote.run?.id||'';
+  selectedBuildStepId='';
+  buildDetailMode=true;
+  buildRunTab='summary';
+  buildManagementMode='runs';
+  renderProject();
+
+  clearInterval(pollTimer);
+  pollTimer=setInterval(refreshCurrent,1500);
+  return true;
+}
+
 async function ensureModernLocalBuildAgent(){
   if(activeProjectBase!==LOCAL_API)return true;
 
@@ -1261,6 +1338,26 @@ async function build(){
 
       if(platform==='android'&&activeProjectBase===LOCAL_API){
         setClientPrepareRun('in_progress','Checking the local Android build engine…');
+        let health=null;
+        try{
+          const r=await fetch(LOCAL_API+'/health',{cache:'no-store'});
+          health=await r.json().catch(()=>null);
+        }catch{}
+        localAgentVersion=health?.version||localAgentVersion||'0';
+
+        if(versionLt(localAgentVersion,'1.3.2')){
+          if(!isSigningConnected(signingInfo)){
+            setClientPrepareRun('in_progress','Checking the APK signing key before remote build…');
+            const ready=await ensureProjectSigningReady({force:true});
+            if(!ready){
+              setClientPrepareRun('failed','APK Studio could not create or connect the signing key.');
+              return;
+            }
+          }
+          await startRemoteModernBuildFromLocal();
+          return;
+        }
+
         const modern=await ensureModernLocalBuildAgent();
         if(!modern)return;
       }
