@@ -396,6 +396,8 @@ let projects=[],current=null,root='editable',dir='',selected='',saved='',pollTim
 let lastProgressDone=null,lastProgressChangedAt=0,recoveryRequested=false;
 let githubSession={connected:false,user:null},githubProjects=[];
 let signingInfo={mode:'apkstudio',configured:false,automaticReady:false};
+let signingPreparePromise=null;
+let signingPreparedProjectId='';
 let pendingProjectPlatform='';
 let selectedBuildRunIndex=0,selectedBuildRunId='',selectedBuildStepId='',stepLogRequestSeq=0,buildDetailMode=false,buildRunTab='summary',buildManagementMode='runs';
 
@@ -796,6 +798,8 @@ async function deleteProject(id){if(!confirm('Delete this project?'))return;try{
 async function openProject(id){
   clearInterval(pollTimer);
   signingInfo={mode:'apkstudio',configured:false,automaticReady:false};
+  signingPreparedProjectId='';
+  signingPreparePromise=null;
   selectedBuildRunId='';selectedBuildStepId='';buildDetailMode=false;buildRunTab='summary';buildManagementMode='runs';
   const listed=projects.find(p=>p.id===id);
   activeProjectBase=listed?listed._base:'';
@@ -823,7 +827,11 @@ function goHome(){clearInterval(pollTimer);current=null;$('workspaceView').class
 async function refreshCurrent(){
   if(!current)return;
   try{
+    const previousStatus=current.status;
     current=await api('/api/projects/'+current.id,{timeout:20000});
+    if((current.platform||'android')==='android' && current.status==='ready' && previousStatus!=='ready' && signingPreparedProjectId!==current.id){
+      void ensureProjectSigningReady().then(()=>loadSigningStatus()).catch(()=>{});
+    }
     const pr=progressFromLog(current.log||'');
     if(pr&&pr.done!==lastProgressDone){lastProgressDone=pr.done;lastProgressChangedAt=Date.now()}
     if(current.status==='processing'&&String(current.stage||'').startsWith('jadx')&&lastProgressChangedAt&&Date.now()-lastProgressChangedAt>90000&&!recoveryRequested){
@@ -1109,6 +1117,14 @@ async function openFile(path){
 async function saveFile(){if(!selected||root!=='editable')return;const q=new URLSearchParams({root,path:selected});try{await api('/api/projects/'+current.id+'/file?'+q,{method:'PUT',headers:{'content-type':'application/json'},body:JSON.stringify({content:$('editor').value}),timeout:30000});saved=$('editor').value;$('dirtyState').textContent='';$('saveFile').disabled=true}catch(e){alert(e.message)}}
 async function build(){
   if(!current)return;
+  if((current.platform||'android')==='android' && !(signingInfo.configured||signingInfo.automaticReady)){
+    switchSection('build');
+    const ready=await ensureProjectSigningReady({force:true});
+    if(!ready){
+      alert('APK Studio could not create or connect the signing key. Open Signing to see the exact error.');
+      return;
+    }
+  }
   const signingReady=(current.platform||'android')!=='android'||!!(signingInfo.configured||signingInfo.automaticReady);
   if(!signingReady){
     switchSection('build');
@@ -1133,6 +1149,59 @@ async function build(){
     pollTimer=setInterval(refreshCurrent,1500);
   }catch(e){alert(e.message)}
 }
+async function ensureProjectSigningReady({force=false}={}){
+  if(!current||(current.platform||'android')!=='android')return true;
+  if(current.status!=='ready')return false;
+  if(!force && (signingInfo.configured||signingInfo.automaticReady))return true;
+  if(signingPreparePromise)return signingPreparePromise;
+
+  const projectId=current.id;
+  signingPreparePromise=(async()=>{
+    try{
+      let state=await api('/api/projects/'+projectId+'/signing',{timeout:15000});
+      if(state.configured||state.automaticReady){
+        signingInfo=state;
+        signingPreparedProjectId=projectId;
+        return true;
+      }
+
+      $('signingStatus').textContent='Automatic · creating APK Studio signing key…';
+      renderSigningManagement();
+
+      await api('/api/projects/'+projectId+'/signing/prepare',{method:'POST',timeout:120000});
+      state=await api('/api/projects/'+projectId+'/signing',{timeout:15000});
+
+      if(!(state.configured||state.automaticReady)){
+        throw new Error('The signing key was created but the processor did not report it as connected.');
+      }
+
+      signingInfo=state;
+      signingPreparedProjectId=projectId;
+      if(current?.id===projectId){
+        current.signingReady=true;
+        current.signingError=null;
+      }
+      return true;
+    }catch(e){
+      const msg=String(e?.message||e||'Unknown signing error').slice(0,240);
+      signingInfo={mode:'apkstudio',configured:false,automaticReady:false,error:msg};
+      if(current?.id===projectId){
+        current.signingReady=false;
+        current.signingError=msg;
+      }
+      return false;
+    }finally{
+      signingPreparePromise=null;
+      if(current?.id===projectId){
+        renderSigningManagement();
+        renderProject();
+      }
+    }
+  })();
+
+  return signingPreparePromise;
+}
+
 async function loadSigningStatus(){
   if(!current)return;
   if((current.platform||'android')!=='android'){
@@ -1142,45 +1211,19 @@ async function loadSigningStatus(){
     renderProject();
     return;
   }
+
   $('buildSigningNav').classList.remove('hidden');
+
   try{
     signingInfo=await api('/api/projects/'+current.id+'/signing',{timeout:15000});
-
-    if(!signingInfo.configured && !signingInfo.automaticReady && current.status==='ready'){
-      $('signingStatus').textContent='Automatic · preparing APK Studio key…';
-      renderProject();
-
-      let prepareError=null;
-      try{
-        signingInfo=await api('/api/projects/'+current.id+'/signing/prepare',{method:'POST',timeout:120000});
-      }catch(e){
-        prepareError=e;
-      }
-
-      if(prepareError && activeProjectBase===LOCAL_API){
-        let oldAgent=false;
-        try{
-          const hr=await fetch(LOCAL_API+'/health',{cache:'no-store'});
-          const hd=await hr.json();
-          oldAgent=versionLt(hd?.version||'0',REQUIRED_LOCAL_AGENT_VERSION);
-        }catch{}
-        if(oldAgent)prepareError=new Error('Local Agent update required for automatic signing. The server was left running instead of being restarted automatically.');
-      }
-
-      if(prepareError){
-        const msg=String(prepareError.message||prepareError||'Unknown signing error').slice(0,220);
-        signingInfo={mode:'apkstudio',configured:false,automaticReady:false,error:msg};
-        $('signingStatus').textContent='Signing key failed: '+msg;
-        $('buildTop').disabled=true;
-        $('buildPage').disabled=true;
-        renderSigningManagement();
-        return;
-      }
+    if(current.status==='ready' && !(signingInfo.configured||signingInfo.automaticReady)){
+      await ensureProjectSigningReady();
     }
 
-    $('signingStatus').textContent=signingInfo.configured
-      ? 'Automatic ✅ · Original key'
-      : (signingInfo.automaticReady?'Automatic ✅ · APK Studio key ready':'Automatic · preparing APK Studio key…');
+    const ready=!!(signingInfo.configured||signingInfo.automaticReady);
+    $('signingStatus').textContent=ready
+      ? (signingInfo.configured?'Automatic ✅ · Original key':'Automatic ✅ · APK Studio key connected')
+      : 'Automatic · preparing APK Studio key…';
     $('removeSigning').classList.toggle('hidden',!signingInfo.configured);
     $('configureSigning').textContent='Advanced';
     renderSigningManagement();
