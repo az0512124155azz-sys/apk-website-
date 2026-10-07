@@ -526,6 +526,11 @@ function startLocalReconnectWatcher(){
   if(processorMode!=='local')return;
   localReconnectTimer=setInterval(async()=>{
     if(processorMode!=='local')return;
+    if(localUpdatePromise){
+      $('cloudState').textContent='● updating local processor…';
+      $('cloudState').className='cloud-state';
+      return;
+    }
     const ok=await probeLocalAgent(1500);
     if(ok){
       $('cloudState').textContent='● local processor online';$('cloudState').className='cloud-state ok';
@@ -1354,9 +1359,15 @@ window.addEventListener('keydown',e=>{if((e.ctrlKey||e.metaKey)&&e.key.toLowerCa
   }
 
   renderProcessorMode();
-  startLocalReconnectWatcher();
   await checkProcessor();
-  if(processorMode==='local'&&!localUpdatePromise)ensureLocalAgentCurrent().catch(()=>{});
+  if(processorMode==='local'){
+    const currentAgent=await ensureLocalAgentCurrent();
+    if(!currentAgent){
+      $('cloudState').textContent='● local processor update required';
+      $('cloudState').className='cloud-state bad';
+    }
+  }
+  startLocalReconnectWatcher();
   await loadProjects();
 })();
 </script>
