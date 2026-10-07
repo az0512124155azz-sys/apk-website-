@@ -252,7 +252,7 @@ html,body{background:#0d1117;color:#e6edf3;margin:0}.hidden{display:none!importa
         <div id="buildRuns" class="build-runs-list"></div>
       </div>
 
-      <section class="build-run-detail" id="buildRunDetail">
+      <section class="build-run-detail hidden" id="buildRunDetail">
         <div class="build-run-detail-head">
           <button class="icon-button" id="buildRunBack" title="Back to all builds">←</button>
           <div class="build-detail-heading-text">
@@ -262,44 +262,82 @@ html,body{background:#0d1117;color:#e6edf3;margin:0}.hidden{display:none!importa
           <span id="buildDetailStatus" class="build-detail-status">○ idle</span>
         </div>
 
-        <div class="workflow-job-shell">
-          <aside class="workflow-steps-panel">
-            <div class="workflow-job-head"><span>◉</span><strong id="buildJobTitle">Build</strong></div>
-            <div id="buildSteps" class="workflow-steps-list"></div>
+        <div class="run-detail-shell">
+          <aside class="run-detail-sidebar">
+            <button class="run-detail-nav active" id="runSummaryNav"><span>◫</span><strong>Summary</strong></button>
+            <div class="run-detail-label">Jobs</div>
+            <button class="run-detail-nav" id="runJobNav"><span id="runJobStatusIcon" class="run-job-dot">○</span><strong id="buildJobTitle">Build</strong></button>
           </aside>
-          <section class="log-section actions-log workflow-step-log">
-            <div class="log-head">
-              <strong id="logTitle">Select a step</strong>
-              <span id="logSubtitle">live output</span>
-              <span class="log-live-dot" id="buildLogLiveDot"></span>
-            </div>
-            <pre id="buildLog">Select a build step to view its output.</pre>
-          </section>
-        </div>
 
-        <div class="signing-panel actions-signing" id="signingPanel">
-          <div class="signing-row">
-            <span>APK signing</span>
-            <strong id="signingStatus">Automatic ✅</strong>
-            <button class="button small" id="configureSigning">Advanced</button>
-          </div>
-          <div class="signing-form hidden" id="signingForm">
-            <div class="signing-note" style="grid-column:1/-1">
-              APK Studio signs rebuilt APKs automatically. Use an original key only when you need the rebuilt APK to update an already-installed app signed with that key.
-            </div>
-            <input id="keystoreFile" type="file" accept=".jks,.keystore">
-            <input id="keyAlias" placeholder="Key alias">
-            <input id="storePass" type="password" placeholder="Keystore password">
-            <input id="keyPass" type="password" placeholder="Key password (optional)">
-            <div class="signing-actions">
-              <button class="button primary" id="saveSigning">Use original key</button>
-              <button class="button hidden" id="removeSigning">Forget original key</button>
-              <button class="button" id="cancelSigning">Close</button>
-            </div>
+          <div class="run-detail-main">
+            <section id="runSummaryView">
+              <div class="run-summary-card">
+                <div class="run-summary-card-head">
+                  <div><strong>Build summary</strong><span id="runSummaryText">Workflow run details</span></div>
+                  <span id="runSummaryStatus" class="build-detail-status idle">○ idle</span>
+                </div>
+                <div class="run-summary-stats">
+                  <div><span>Started</span><strong id="runStartedAt">—</strong></div>
+                  <div><span>Duration</span><strong id="runDuration">—</strong></div>
+                  <div><span>Processor</span><strong id="runProcessor">—</strong></div>
+                </div>
+              </div>
+
+              <div class="run-summary-section">
+                <h3>Jobs</h3>
+                <button class="job-graph-card" id="runGraphJob">
+                  <span id="runGraphStatus" class="run-job-dot">○</span>
+                  <div><strong id="runGraphTitle">Build APK</strong><span id="runGraphMeta">Queued</span></div>
+                  <span class="job-graph-arrow">›</span>
+                </button>
+              </div>
+
+              <div class="run-summary-section hidden" id="runAnnotationsSection">
+                <h3>Annotations</h3>
+                <div id="runAnnotations"></div>
+              </div>
+
+              <div class="run-summary-section">
+                <h3>Artifacts</h3>
+                <div id="runArtifactsEmpty" class="run-empty-note">No artifacts for this run yet.</div>
+                <a class="artifact-row actions-artifact hidden" id="apkArtifact">↓ <div><strong id="artifactName">app-rebuilt-signed.apk</strong><span id="artifactStatus">Signed APK ready to install</span></div></a>
+              </div>
+            </section>
+
+            <section id="runJobView" class="hidden">
+              <div class="run-job-page-head">
+                <div><strong id="runJobPageTitle">Build APK</strong><span id="runJobPageMeta">Job steps</span></div>
+                <span id="runJobPageStatus" class="build-detail-status idle">○ idle</span>
+              </div>
+              <div id="buildSteps" class="job-step-accordion"></div>
+            </section>
           </div>
         </div>
+      </section>
 
-        <a class="artifact-row actions-artifact hidden" id="apkArtifact">↓ <div><strong id="artifactName">app-rebuilt-signed.apk</strong><span id="artifactStatus">Signed APK ready to install</span></div></a>
+      <section class="signing-management hidden" id="signingManagement">
+        <div class="signing-management-head">
+          <div><h3>APK signing</h3><p>APK Studio creates and keeps a signing key for this project automatically.</p></div>
+          <span id="signingConnectedBadge" class="signing-connected-badge waiting">Preparing</span>
+        </div>
+        <div class="signing-key-card">
+          <div class="signing-key-icon">◇</div>
+          <div class="signing-key-copy"><strong id="signingKeyTitle">APK Studio key</strong><span id="signingKeyMeta">Checking project key…</span></div>
+          <button class="button small" id="configureSigning">Advanced</button>
+        </div>
+        <div class="signing-form hidden" id="signingForm">
+          <div class="signing-note" style="grid-column:1/-1">APK Studio signs rebuilt APKs automatically. Use an original key only when you need the rebuilt APK to update an already-installed app signed with that key.</div>
+          <input id="keystoreFile" type="file" accept=".jks,.keystore">
+          <input id="keyAlias" placeholder="Key alias">
+          <input id="storePass" type="password" placeholder="Keystore password">
+          <input id="keyPass" type="password" placeholder="Key password (optional)">
+          <div class="signing-actions">
+            <button class="button primary" id="saveSigning">Use original key</button>
+            <button class="button hidden" id="removeSigning">Forget original key</button>
+            <button class="button" id="cancelSigning">Close</button>
+          </div>
+        </div>
+        <div id="signingStatus" class="hidden"></div>
       </section>
       <div id="buildTable" class="hidden"></div>
     </div>
