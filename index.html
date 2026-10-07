@@ -454,62 +454,23 @@ let localUpdateFailedAt=0;
 async function ensureLocalAgentCurrent(){
   const localProject=activeProjectBase===LOCAL_API;
   if(processorMode!=='local'&&!localProject)return true;
-  if(localUpdatePromise)return localUpdatePromise;
-  if(localUpdateFailedAt&&Date.now()-localUpdateFailedAt<30000)return false;
-
-  localUpdatePromise=(async()=>{
-    try{
-      const r=await fetch(LOCAL_API+'/health',{cache:'no-store'});
-      const d=await r.json();
-      localAgentVersion=d.version||'0';
-      if(!versionLt(localAgentVersion,REQUIRED_LOCAL_AGENT_VERSION))return true;
-
-      $('cloudState').textContent='● updating local processor…';
-      $('cloudState').className='cloud-state';
-
-      let updateStarted=false;
-      try{
-        const u=await fetch(LOCAL_API+'/api/local/update',{method:'POST',cache:'no-store'});
-        updateStarted=u.ok;
-      }catch{}
-
-      if(!updateStarted){
-        localUpdateFailedAt=Date.now();
-        $('cloudState').textContent='● local processor update failed';
-        $('cloudState').className='cloud-state bad';
-        return false;
-      }
-
-      let sawDisconnect=false;
-      for(let i=0;i<80;i++){
-        await new Promise(r=>setTimeout(r,1000));
-        try{
-          const hr=await fetch(LOCAL_API+'/health',{cache:'no-store'});
-          const hd=await hr.json();
-          if(hr.ok){
-            localAgentVersion=hd.version||'0';
-            if(!versionLt(localAgentVersion,REQUIRED_LOCAL_AGENT_VERSION)){
-              $('cloudState').textContent='● local processor online';
-              $('cloudState').className='cloud-state ok';
-              localUpdateFailedAt=0;
-              return true;
-            }
-          }
-        }catch{sawDisconnect=true}
-      }
-
-      localUpdateFailedAt=Date.now();
-      $('cloudState').textContent=sawDisconnect?'● local processor did not return':'● local processor update failed';
-      $('cloudState').className='cloud-state bad';
-      return false;
-    }catch{
-      localUpdateFailedAt=Date.now();
-      return false;
-    }
-  })();
-
-  try{return await localUpdatePromise}
-  finally{localUpdatePromise=null}
+  const controller=new AbortController();
+  const timer=setTimeout(()=>controller.abort(),1200);
+  try{
+    const r=await fetch(LOCAL_API+'/health',{cache:'no-store',signal:controller.signal});
+    const d=await r.json().catch(()=>null);
+    if(!r.ok||!d?.ok)return false;
+    localAgentVersion=d.version||'0';
+    $('cloudState').textContent=versionLt(localAgentVersion,REQUIRED_LOCAL_AGENT_VERSION)
+      ? '● local processor online · update available'
+      : '● local processor online';
+    $('cloudState').className='cloud-state ok';
+    return true;
+  }catch{
+    return false;
+  }finally{
+    clearTimeout(timer);
+  }
 }
 async function probeLocalAgent(timeout=1800){
   const controller=new AbortController();const timer=setTimeout(()=>controller.abort(),timeout);
@@ -521,23 +482,25 @@ async function probeLocalAgent(timeout=1800){
   finally{clearTimeout(timer)}
 }
 let localReconnectTimer=null;
+let localWasOnline=false;
 function startLocalReconnectWatcher(){
   if(localReconnectTimer)clearInterval(localReconnectTimer);
   if(processorMode!=='local')return;
   localReconnectTimer=setInterval(async()=>{
     if(processorMode!=='local')return;
-    if(localUpdatePromise){
-      $('cloudState').textContent='● updating local processor…';
-      $('cloudState').className='cloud-state';
-      return;
-    }
-    const ok=await probeLocalAgent(1500);
+    const ok=await probeLocalAgent(800);
     if(ok){
-      $('cloudState').textContent='● local processor online';$('cloudState').className='cloud-state ok';
+      const becameOnline=!localWasOnline;
+      localWasOnline=true;
+      $('cloudState').textContent='● local processor online';
+      $('cloudState').className='cloud-state ok';
+      if(becameOnline && !current && !$('projectsView').classList.contains('hidden'))loadProjects().catch(()=>{});
     }else{
-      $('cloudState').textContent='● local processor offline';$('cloudState').className='cloud-state bad';
+      localWasOnline=false;
+      $('cloudState').textContent='● local processor offline';
+      $('cloudState').className='cloud-state bad';
     }
-  },5000);
+  },2500);
 }
 function renderProcessorMode(){
   const label=processorMode==='local'?'This computer':'Cloud';
@@ -623,29 +586,36 @@ function showProcessorModeDialog(){
   $('processorModeOverlay').classList.remove('hidden');
 }
 async function checkProcessor(){
+  if(processorMode==='local'){
+    $('cloudState').textContent='● connecting to this computer…';
+    $('cloudState').className='cloud-state';
+    for(let i=0;i<4;i++){
+      if(await probeLocalAgent(i===0?900:700)){
+        try{
+          const r=await fetch(LOCAL_API+'/health',{cache:'no-store'});
+          const d=await r.json().catch(()=>null);
+          localAgentVersion=d?.version||'0';
+        }catch{}
+        $('cloudState').textContent=versionLt(localAgentVersion,REQUIRED_LOCAL_AGENT_VERSION)
+          ? '● local processor online · update available'
+          : '● local processor online';
+        $('cloudState').className='cloud-state ok';
+        return true;
+      }
+      if(i<3)await new Promise(r=>setTimeout(r,250));
+    }
+    $('cloudState').textContent='● local processor offline';
+    $('cloudState').className='cloud-state bad';
+    return false;
+  }
   try{
-    const health=await api('/health',{timeout:processorMode==='local'?2500:45000});
-    if(processorMode==='local')localAgentVersion=health.version||'0';
-    $('cloudState').textContent=processorMode==='local'?'● local processor online':'● cloud processor online';
+    await api('/health',{timeout:15000});
+    $('cloudState').textContent='● cloud processor online';
     $('cloudState').className='cloud-state ok';
     return true;
-  }catch(e){
-    if(processorMode==='local'){
-      $('cloudState').textContent='● local processor offline';
-      $('cloudState').className='cloud-state bad';
-      for(let i=0;i<5;i++){
-        await new Promise(r=>setTimeout(r,1000));
-        if(await probeLocalAgent(1200)){
-          $('cloudState').textContent='● local processor online';$('cloudState').className='cloud-state ok';
-          return true;
-        }
-      }
-      $('cloudState').textContent='● local processor unavailable';
-      $('cloudState').className='cloud-state bad';
-    }else{
-      $('cloudState').textContent='● cloud processor unavailable';
-      $('cloudState').className='cloud-state bad';
-    }
+  }catch{
+    $('cloudState').textContent='● cloud processor unavailable';
+    $('cloudState').className='cloud-state bad';
     return false;
   }
 }
@@ -822,14 +792,11 @@ async function openProject(id){
   selectedBuildRunId='';selectedBuildStepId='';buildDetailMode=false;buildRunTab='summary';buildManagementMode='runs';
   const listed=projects.find(p=>p.id===id);
   activeProjectBase=listed?listed._base:'';
-  if(activeProjectBase===LOCAL_API){
-    const updated=await ensureLocalAgentCurrent();
-    if(!updated){
-      alert('The local processor update did not finish. APK Studio stopped instead of restarting the server again. Use Retry Local Agent once and try again.');
-      return;
-    }
+  if(activeProjectBase===LOCAL_API && !(await probeLocalAgent(1000))){
+    alert('The local processor is offline. APK Studio did not restart it automatically. Use Retry Local Agent once and try again.');
+    return;
   }
-  current=await api('/api/projects/'+id,{timeout:45000});openedAt=Date.now();lastProgressDone=null;lastProgressChangedAt=Date.now();recoveryRequested=false;
+  current=await api('/api/projects/'+id,{timeout:15000});openedAt=Date.now();lastProgressDone=null;lastProgressChangedAt=Date.now();recoveryRequested=false;
   $('projectsView').classList.add('hidden');$('workspaceView').classList.remove('hidden');
   const name=(current.originalName||id).replace(/\.apk$/i,'');$('repoName').textContent=name;$('topRepoName').textContent=name;
   const platform=current.platform||'android';
@@ -1184,24 +1151,13 @@ async function loadSigningStatus(){
       }
 
       if(prepareError && activeProjectBase===LOCAL_API){
-        $('signingStatus').textContent='Automatic · updating local signing service…';
-        const updated=await ensureLocalAgentCurrent();
-        if(updated){
-          for(let i=0;i<20;i++){
-            try{
-              const hr=await fetch(LOCAL_API+'/health',{cache:'no-store'});
-              const hd=await hr.json();
-              if(hr.ok&&!versionLt(hd.version,REQUIRED_LOCAL_AGENT_VERSION))break;
-            }catch{}
-            await new Promise(r=>setTimeout(r,1000));
-          }
-          try{
-            signingInfo=await api('/api/projects/'+current.id+'/signing/prepare',{method:'POST',timeout:120000});
-            prepareError=null;
-          }catch(e){
-            prepareError=e;
-          }
-        }
+        let oldAgent=false;
+        try{
+          const hr=await fetch(LOCAL_API+'/health',{cache:'no-store'});
+          const hd=await hr.json();
+          oldAgent=versionLt(hd?.version||'0',REQUIRED_LOCAL_AGENT_VERSION);
+        }catch{}
+        if(oldAgent)prepareError=new Error('Local Agent update required for automatic signing. The server was left running instead of being restarted automatically.');
       }
 
       if(prepareError){
@@ -1359,16 +1315,12 @@ window.addEventListener('keydown',e=>{if((e.ctrlKey||e.metaKey)&&e.key.toLowerCa
   }
 
   renderProcessorMode();
-  await checkProcessor();
-  if(processorMode==='local'){
-    const currentAgent=await ensureLocalAgentCurrent();
-    if(!currentAgent){
-      $('cloudState').textContent='● local processor update required';
-      $('cloudState').className='cloud-state bad';
-    }
-  }
+  const connected=await checkProcessor();
   startLocalReconnectWatcher();
-  await loadProjects();
+  if(connected||processorMode!=='local')await loadProjects();
+  else{
+    $('projectList').innerHTML='<div class="empty-list"><strong>Local processor is offline</strong><span>APK Studio will reconnect automatically when the background agent is available.</span></div>';
+  }
 })();
 </script>
 </body>
