@@ -190,6 +190,7 @@ html,body{background:#0d1117;color:#e6edf3;margin:0}.hidden{display:none!importa
 <script>
 const CLOUD_API='/processor';
 const LOCAL_API='http://127.0.0.1:32145';
+const REQUIRED_LOCAL_AGENT_VERSION='1.1.0';
 function getCookie(name){
   const parts=document.cookie?document.cookie.split('; '):[];
   for(const part of parts){
@@ -240,6 +241,48 @@ async function wakeLocalAgent(){
   try{
     location.href='apkstudiolocal://start';
   }catch{}
+}
+function versionParts(v){return String(v||'0').split('.').map(x=>parseInt(x,10)||0)}
+function versionLt(a,b){
+  const aa=versionParts(a),bb=versionParts(b);
+  for(let i=0;i<Math.max(aa.length,bb.length);i++){const x=aa[i]||0,y=bb[i]||0;if(x!==y)return x<y}
+  return false;
+}
+let localAgentVersion='';
+async function ensureLocalAgentCurrent(){
+  if(processorMode!=='local')return true;
+  try{
+    const r=await fetch(LOCAL_API+'/health',{cache:'no-store'});
+    const d=await r.json();
+    localAgentVersion=d.version||'0';
+    if(!versionLt(localAgentVersion,REQUIRED_LOCAL_AGENT_VERSION))return true;
+
+    $('cloudState').textContent='● updating local processor…';$('cloudState').className='cloud-state';
+    try{
+      const u=await fetch(LOCAL_API+'/api/local/update',{method:'POST',cache:'no-store'});
+      if(u.ok){
+        for(let i=0;i<60;i++){
+          await new Promise(r=>setTimeout(r,1500));
+          try{
+            const hr=await fetch(LOCAL_API+'/health',{cache:'no-store'});
+            const hd=await hr.json();
+            if(hr.ok&&!versionLt(hd.version,REQUIRED_LOCAL_AGENT_VERSION)){
+              localAgentVersion=hd.version;
+              $('cloudState').textContent='● local processor online';$('cloudState').className='cloud-state ok';
+              return true;
+            }
+          }catch{}
+        }
+      }
+    }catch{}
+
+    if(!sessionStorage.getItem('apkstudio_agent_update_downloaded')){
+      sessionStorage.setItem('apkstudio_agent_update_downloaded','1');
+      const a=document.createElement('a');a.href='/install-local-agent.cmd';a.download='APK-Studio-Local-Agent-Update.cmd';a.style.display='none';document.body.appendChild(a);a.click();a.remove();
+    }
+    $('cloudState').textContent='● local processor update required';$('cloudState').className='cloud-state bad';
+    return false;
+  }catch{return false}
 }
 async function probeLocalAgent(timeout=1800){
   const controller=new AbortController();const timer=setTimeout(()=>controller.abort(),timeout);
@@ -333,7 +376,8 @@ function showProcessorModeDialog(){
 }
 async function checkProcessor(){
   try{
-    await api('/health',{timeout:processorMode==='local'?2500:45000});
+    const health=await api('/health',{timeout:processorMode==='local'?2500:45000});
+    if(processorMode==='local')localAgentVersion=health.version||'0';
     $('cloudState').textContent=processorMode==='local'?'● local processor online':'● cloud processor online';
     $('cloudState').className='cloud-state ok';
     return true;
@@ -562,7 +606,7 @@ function renderProject(){
     $('logSubtitle').textContent=ready?'completed output':'live output';
     $('buildLog').textContent=fullLog||'Waiting for processor output…';
   }
-  if(current.buildArtifact){
+  if(current.buildArtifact && current.buildStatus!=='error'){
     $('apkArtifact').classList.remove('hidden');
     $('apkArtifact').href=API+'/api/projects/'+current.id+'/apk';
     $('artifactName').textContent=current.buildSigned?'app-rebuilt-signed.apk':'app-rebuilt.apk';
@@ -717,6 +761,7 @@ window.addEventListener('keydown',e=>{if((e.ctrlKey||e.metaKey)&&e.key.toLowerCa
   renderProcessorMode();
   startLocalReconnectWatcher();
   await checkProcessor();
+  if(processorMode==='local')await ensureLocalAgentCurrent();
   await finishGithubHandoff();
   await loadGithub();
   await loadProjects();
