@@ -31,6 +31,16 @@ const upload=multer({
   }
 });
 
+const signingUpload=multer({
+  dest:path.join(os.tmpdir(),'apk-studio-signing-upload'),
+  limits:{fileSize:20*1024*1024},
+  fileFilter:(_req,file,cb)=>{
+    const name=file.originalname.toLowerCase();
+    const ok=name.endsWith('.jks')||name.endsWith('.keystore');
+    cb(ok?null:new Error('Only .jks or .keystore files are accepted'),ok);
+  }
+});
+
 const sessionKey=crypto.createHash('sha256').update(sessionSecret).digest();
 function parseCookies(req){
   const out={};
@@ -267,7 +277,72 @@ app.put('/api/projects/:id/file',async(req,res,next)=>{
     if(root!=='editable')throw new Error('Readable source is read-only');
     const file=safeJoin(path.join(projectDir(req.params.id),root),String(req.query.path||''));
     await fs.writeFile(file,String(req.body.content??''),'utf8');
-    res.json({ok:true});
+    const meta=await writeMeta(req.params.id,{
+      editableRevision:String(Date.now()),
+      buildStatus:'stale',
+      buildStage:null,
+      buildArtifact:null,
+      buildError:null
+    });
+    res.json({ok:true,editableRevision:meta.editableRevision});
+  }catch(e){next(e);}
+});
+
+app.get('/api/projects/:id/signing',async(req,res,next)=>{
+  try{
+    await ensureProjectAvailable(req,req.params.id);
+    const dir=projectDir(req.params.id);
+    const cfg=await fs.readJson(path.join(dir,'signing-config.json')).catch(()=>null);
+    res.json({
+      mode:cfg?'custom':'apkstudio',
+      configured:!!cfg,
+      alias:cfg?.alias||null,
+      fileName:cfg?.fileName||null
+    });
+  }catch(e){next(e);}
+});
+
+app.post('/api/projects/:id/signing',signingUpload.single('keystore'),async(req,res,next)=>{
+  try{
+    await ensureProjectAvailable(req,req.params.id);
+    if(!req.file)throw new Error('Keystore file is required');
+    const alias=String(req.body.alias||'').trim();
+    const storePass=String(req.body.storePass||'');
+    const keyPass=String(req.body.keyPass||storePass);
+    if(!alias)throw new Error('Key alias is required');
+    if(!storePass)throw new Error('Keystore password is required');
+    const dir=projectDir(req.params.id);
+    const dest=path.join(dir,'user-signing.keystore');
+    await fs.move(req.file.path,dest,{overwrite:true});
+    await fs.writeJson(path.join(dir,'signing-config.json'),{
+      alias,storePass,keyPass,fileName:req.file.originalname,updatedAt:new Date().toISOString()
+    },{spaces:2});
+    await writeMeta(req.params.id,{
+      signingType:'Original/custom keystore',
+      buildStatus:'stale',
+      buildArtifact:null,
+      buildError:null
+    });
+    res.json({ok:true,mode:'custom',alias,fileName:req.file.originalname});
+  }catch(e){
+    if(req.file?.path)await fs.remove(req.file.path).catch(()=>{});
+    next(e);
+  }
+});
+
+app.delete('/api/projects/:id/signing',async(req,res,next)=>{
+  try{
+    await ensureProjectAvailable(req,req.params.id);
+    const dir=projectDir(req.params.id);
+    await fs.remove(path.join(dir,'signing-config.json'));
+    await fs.remove(path.join(dir,'user-signing.keystore'));
+    await writeMeta(req.params.id,{
+      signingType:'APK Studio project key',
+      buildStatus:'stale',
+      buildArtifact:null,
+      buildError:null
+    });
+    res.json({ok:true,mode:'apkstudio'});
   }catch(e){next(e);}
 });
 
@@ -283,7 +358,13 @@ app.post('/api/projects/:id/recover',async(req,res,next)=>{
 });
 
 app.post('/api/projects/:id/build',async(req,res,next)=>{
-  try{await ensureProjectAvailable(req,req.params.id);void rebuild(req.params.id);res.status(202).json({ok:true});}catch(e){next(e);}
+  try{
+    const meta=await ensureProjectAvailable(req,req.params.id);
+    if(meta.buildStatus==='building')return res.status(202).json({ok:true,alreadyBuilding:true,stage:meta.buildStage||'building'});
+    await writeMeta(req.params.id,{buildStatus:'building',buildStage:'queued',buildStartedAt:new Date().toISOString(),buildError:null});
+    void rebuild(req.params.id);
+    res.status(202).json({ok:true,stage:'queued'});
+  }catch(e){next(e);}
 });
 
 app.get('/api/projects/:id/apk',async(req,res,next)=>{
