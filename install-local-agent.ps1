@@ -113,17 +113,46 @@ cd /d "$cloud"
 "@
 Set-Content -Path $start -Value $cmd -Encoding ASCII
 
-# Start automatically with Windows.
-$startup=Join-Path $env:APPDATA 'Microsoft\Windows\Start Menu\Programs\Startup\APK Studio Local Agent.lnk'
-$w=New-Object -ComObject WScript.Shell
-$link=$w.CreateShortcut($startup)
-$link.TargetPath=$start
-$link.WorkingDirectory=$installDir
-$link.WindowStyle=7
-$link.Save()
+# Start automatically with Windows and restart if the agent crashes.
+$taskName='APK Studio Local Agent'
+try{
+  $action=New-ScheduledTaskAction -Execute 'cmd.exe' -Argument ('/c "'+$start+'"')
+  $trigger=New-ScheduledTaskTrigger -AtLogOn -User $env:USERNAME
+  $settings=New-ScheduledTaskSettingsSet -RestartCount 999 -RestartInterval (New-TimeSpan -Minutes 1) -StartWhenAvailable -ExecutionTimeLimit ([TimeSpan]::Zero)
+  Register-ScheduledTask -TaskName $taskName -Action $action -Trigger $trigger -Settings $settings -Description 'Keeps APK Studio Local Agent running for local APK processing.' -Force | Out-Null
+}catch{
+  Write-Host 'Scheduled task setup failed; using Startup shortcut fallback.' -ForegroundColor Yellow
+  $startup=Join-Path $env:APPDATA 'Microsoft\Windows\Start Menu\Programs\Startup\APK Studio Local Agent.lnk'
+  $w=New-Object -ComObject WScript.Shell
+  $link=$w.CreateShortcut($startup)
+  $link.TargetPath=$start
+  $link.WorkingDirectory=$installDir
+  $link.WindowStyle=7
+  $link.Save()
+}
+
+# Register a local protocol so the website can restart the agent with one click.
+$launcher=Join-Path $installDir 'launch-local-agent.ps1'
+$launcherBody=@'
+$ErrorActionPreference='SilentlyContinue'
+try{
+  $r=Invoke-RestMethod -UseBasicParsing -Uri 'http://127.0.0.1:32145/health' -TimeoutSec 2
+  if($r.ok){exit 0}
+}catch{}
+$start=Join-Path $env:LOCALAPPDATA 'APKStudioLocal\start-local-agent.cmd'
+if(Test-Path $start){Start-Process -FilePath $start -WindowStyle Hidden}
+'@
+Set-Content -Path $launcher -Value $launcherBody -Encoding UTF8
+$proto='HKCU:\Software\Classes\apkstudiolocal'
+New-Item -Path $proto -Force | Out-Null
+Set-ItemProperty -Path $proto -Name '(default)' -Value 'URL:APK Studio Local Agent'
+Set-ItemProperty -Path $proto -Name 'URL Protocol' -Value ''
+New-Item -Path "$proto\shell\open\command" -Force | Out-Null
+$protoCmd='powershell.exe -NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File "'+$launcher+'"'
+Set-ItemProperty -Path "$proto\shell\open\command" -Name '(default)' -Value $protoCmd
 
 # Start now.
-Start-Process -FilePath $start -WindowStyle Hidden
+try{Start-ScheduledTask -TaskName $taskName -ErrorAction Stop}catch{Start-Process -FilePath $start -WindowStyle Hidden}
 
 if(-not (Wait-Health)){
   throw 'Local Agent installed but did not become healthy. See install.log and agent.log.'
