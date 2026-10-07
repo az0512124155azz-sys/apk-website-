@@ -1,5 +1,7 @@
 import fs from 'fs-extra';
 import path from 'node:path';
+import crypto from 'node:crypto';
+import os from 'node:os';
 import AdmZip from 'adm-zip';
 import {java,jadxJar,apktoolJar,projectDir,writeMeta,run,walk,log} from './lib.mjs';
 
@@ -7,13 +9,39 @@ const shortError = (e) => String(e?.message || e || 'Unknown error').slice(-1200
 const localMode = process.env.LOCAL_PROCESSOR === '1';
 const javaXmx = process.env.APK_STUDIO_JAVA_XMX || (localMode ? '4096m' : '352m');
 const javaXms = process.env.APK_STUDIO_JAVA_XMS || (localMode ? '256m' : '64m');
-const workerThreads = String(Number(process.env.APK_STUDIO_THREADS || (localMode ? 4 : 1)));
+const autoThreads = localMode ? Math.max(2,Math.min(8,os.cpus()?.length||4)) : 1;
+const workerThreads = String(Number(process.env.APK_STUDIO_THREADS || autoThreads));
 const javaBinDir = path.dirname(java);
 const isWindows = process.platform === 'win32';
 const keytoolBin = path.join(javaBinDir,isWindows?'keytool.exe':'keytool');
 const jarsignerBin = path.join(javaBinDir,isWindows?'jarsigner.exe':'jarsigner');
 const signingAlias = 'apkstudio';
 const signingPassword = 'apkstudio-local-signing';
+
+async function signingConfigFor(dir){
+  const customFile=path.join(dir,'signing-config.json');
+  const customKey=path.join(dir,'user-signing.keystore');
+  if(await fs.pathExists(customFile) && await fs.pathExists(customKey)){
+    const cfg=await fs.readJson(customFile);
+    const keyHash=crypto.createHash('sha256').update(await fs.readFile(customKey)).digest('hex');
+    return {
+      type:'custom',
+      keystore:customKey,
+      alias:String(cfg.alias||''),
+      storePass:String(cfg.storePass||''),
+      keyPass:String(cfg.keyPass||cfg.storePass||''),
+      fingerprint:'custom:'+keyHash+':'+String(cfg.alias||'')
+    };
+  }
+  return {
+    type:'apkstudio',
+    keystore:path.join(dir,'apkstudio-signing.jks'),
+    alias:signingAlias,
+    storePass:signingPassword,
+    keyPass:signingPassword,
+    fingerprint:'apkstudio-project-key'
+  };
+}
 
 export async function decompile(id,{forceJadxOom=false,skipPerDex=false}={}){
   const dir=projectDir(id),apk=path.join(dir,'original.apk'),readable=path.join(dir,'readable'),editable=path.join(dir,'editable');
@@ -112,6 +140,9 @@ export async function decompile(id,{forceJadxOom=false,skipPerDex=false}={}){
       editableFileCount:files.length,
       jadxWarnings,
       readableAvailable,
+      editableRevision:String(Date.now()),
+      buildStatus:null,
+      buildArtifact:null,
       warning: readableAvailable
         ? (readableMode==='full'
             ? (jadxWarnings ? 'Readable source contains JADX warnings.' : null)
@@ -128,62 +159,88 @@ export async function decompile(id,{forceJadxOom=false,skipPerDex=false}={}){
 export async function rebuild(id){
   const dir=projectDir(id),editable=path.join(dir,'editable'),output=path.join(dir,'output');
   await fs.ensureDir(output);
-  await writeMeta(id,{buildStatus:'building',buildError:null});
+  const meta=await fs.readJson(path.join(dir,'project.json')).catch(()=>({}));
+  const artifact=path.join(output,'app-rebuilt-unsigned.apk');
+  const signedArtifact=path.join(output,'app-rebuilt-signed.apk');
+  const signing=await signingConfigFor(dir);
+  const sameRevision=!!meta.editableRevision && meta.buildRevision===meta.editableRevision;
+  const sameSigning=meta.buildSigningFingerprint===signing.fingerprint;
+
+  if(sameRevision && sameSigning && await fs.pathExists(signedArtifact)){
+    await log(id,'=== BUILD START ===');
+    await log(id,'No source changes detected. Reusing existing signed APK.');
+    await writeMeta(id,{
+      buildStatus:'ready',
+      buildArtifact:'output/app-rebuilt-signed.apk',
+      buildSigned:true,
+      signingType:signing.type==='custom'?'Original/custom keystore':'APK Studio project key',
+      buildCached:true
+    });
+    return;
+  }
+
+  await writeMeta(id,{buildStatus:'building',buildError:null,buildCached:false,buildStage:sameRevision?'signing':'rebuild'});
   await log(id,'=== BUILD START ===');
   await log(id,`Build resources: heap=${javaXmx}, threads=${workerThreads}, local=${localMode}`);
+
   try{
-    const artifact=path.join(output,'app-rebuilt-unsigned.apk');
-    const signedArtifact=path.join(output,'app-rebuilt-signed.apk');
-    const keystore=path.join(dir,'apkstudio-signing.jks');
-    await run(id,java,[
-      '-Xms'+javaXms,'-Xmx'+javaXmx,'-XX:+UseSerialGC',
-      '-jar',apktoolJar,'b','-j',workerThreads,editable,'-o',artifact
-    ],[0],{idleTimeoutMs:180000,timeoutMs:1200000});
+    if(!sameRevision || !await fs.pathExists(artifact)){
+      await log(id,'Rebuilding APK from editable workspace...');
+      await run(id,java,[
+        '-Xms'+javaXms,'-Xmx'+javaXmx,'-XX:+UseSerialGC',
+        '-jar',apktoolJar,'b','-j',workerThreads,editable,'-o',artifact
+      ],[0],{idleTimeoutMs:180000,timeoutMs:1200000});
+    }else{
+      await log(id,'Source unchanged. Skipping Apktool rebuild and reusing unsigned APK.');
+    }
 
     if(!await fs.pathExists(keytoolBin) || !await fs.pathExists(jarsignerBin)){
       throw new Error('APK signing tools are missing. Update the APK Studio Local Agent so it installs a full JDK.');
     }
 
-    if(!await fs.pathExists(keystore)){
+    if(signing.type==='apkstudio' && !await fs.pathExists(signing.keystore)){
       await log(id,'Generating APK Studio project signing key...');
       await run(id,keytoolBin,[
-        '-genkeypair',
-        '-keystore',keystore,
-        '-storepass',signingPassword,
-        '-keypass',signingPassword,
-        '-alias',signingAlias,
-        '-keyalg','RSA',
-        '-keysize','2048',
-        '-validity','10000',
-        '-dname','CN=APK Studio,O=APK Studio,C=US',
-        '-noprompt'
+        '-genkeypair','-keystore',signing.keystore,
+        '-storepass',signing.storePass,'-keypass',signing.keyPass,
+        '-alias',signing.alias,'-keyalg','RSA','-keysize','2048',
+        '-validity','10000','-dname','CN=APK Studio,O=APK Studio,C=US','-noprompt'
       ],[0],{timeoutMs:120000});
     }
 
-    await log(id,'Signing rebuilt APK...');
+    if(signing.type==='custom' && (!signing.alias || !signing.storePass)){
+      throw new Error('Custom signing key is missing alias or keystore password.');
+    }
+
+    await fs.remove(signedArtifact).catch(()=>{});
+    await writeMeta(id,{buildStage:'signing'});
+    await log(id,`Signing rebuilt APK with ${signing.type==='custom'?'custom/original keystore':'APK Studio project key'}...`);
     await run(id,jarsignerBin,[
-      '-keystore',keystore,
-      '-storepass',signingPassword,
-      '-keypass',signingPassword,
-      '-sigalg','SHA256withRSA',
-      '-digestalg','SHA-256',
-      '-signedjar',signedArtifact,
-      artifact,
-      signingAlias
+      '-keystore',signing.keystore,
+      '-storepass',signing.storePass,
+      '-keypass',signing.keyPass,
+      '-sigalg','SHA256withRSA','-digestalg','SHA-256',
+      '-signedjar',signedArtifact,artifact,signing.alias
     ],[0],{timeoutMs:180000});
 
+    await writeMeta(id,{buildStage:'verifying'});
     await log(id,'Verifying APK signature...');
     await run(id,jarsignerBin,['-verify','-strict',signedArtifact],[0],{timeoutMs:120000});
 
     await writeMeta(id,{
       buildStatus:'ready',
+      buildStage:'ready',
       buildArtifact:'output/app-rebuilt-signed.apk',
       buildSigned:true,
-      signingType:'APK Studio project key'
+      signingType:signing.type==='custom'?'Original/custom keystore':'APK Studio project key',
+      buildRevision:meta.editableRevision||String(Date.now()),
+      buildSigningFingerprint:signing.fingerprint,
+      buildCached:false,
+      buildFinishedAt:new Date().toISOString()
     });
   }catch(e){
     const buildError=shortError(e);
     await log(id,'BUILD ERROR: '+buildError);
-    await writeMeta(id,{buildStatus:'error',buildError});
+    await writeMeta(id,{buildStatus:'error',buildStage:'error',buildError});
   }
 }
