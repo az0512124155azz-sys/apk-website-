@@ -982,6 +982,7 @@ async function build(){
   try{
     const d=await api('/api/projects/'+current.id+'/build',{method:'POST',timeout:30000});
     current.buildStatus='building';
+    if(d.run)current.buildRuns=[d.run,...((current.buildRuns||[]).filter(r=>r.id!==d.run.id))];
     current.buildStage=d.stage||current.buildStage||'queued';
     current.buildStartedAt=current.buildStartedAt||new Date().toISOString();
     selectedBuildRunIndex=0;selectedBuildRunId=d.run?.id||'';selectedBuildStepId='';buildDetailMode=true;
@@ -1158,7 +1159,7 @@ $('buildTop').onclick=build;$('buildPage').onclick=build;
 $('buildRunSearch').oninput=()=>renderBuildActions();
 $('buildRunBack').onclick=()=>{buildDetailMode=false;selectedBuildStepId='';renderBuildActions()};
 $('buildAllRuns').onclick=()=>{document.querySelectorAll('.build-side-item').forEach(x=>x.classList.remove('active'));$('buildAllRuns').classList.add('active');$('buildRunSearch').value='';buildDetailMode=false;renderBuildActions()};
-$('buildWorkflow').onclick=()=>{document.querySelectorAll('.build-side-item').forEach(x=>x.classList.remove('active'));$('buildWorkflow').classList.add('active');$('buildRunSearch').value=current?.platform==='windows'?'Build Windows':current?.platform==='linux'?'Build Linux':'Build APK';renderBuildActions()};
+$('buildWorkflow').onclick=()=>{document.querySelectorAll('.build-side-item').forEach(x=>x.classList.remove('active'));$('buildWorkflow').classList.add('active');$('buildRunSearch').value=current?.platform==='windows'?'Build Windows':current?.platform==='linux'?'Build Linux':'Build APK';buildDetailMode=false;renderBuildActions()};
 $('buildSigningNav').onclick=()=>{document.querySelectorAll('.build-side-item').forEach(x=>x.classList.remove('active'));$('buildSigningNav').classList.add('active');$('signingForm').classList.remove('hidden');$('configureSigning').scrollIntoView({behavior:'smooth',block:'center'})};
 $('configureSigning').onclick=()=>$('signingForm').classList.remove('hidden');
 $('cancelSigning').onclick=()=>$('signingForm').classList.add('hidden');
