@@ -641,25 +641,32 @@ async function finishGithubHandoff(){
 async function loadProjects(){
   const merged=new Map();
   let primaryError=null;
+
   try{
-    const d=await api('/api/projects',{timeout:45000});
+    const timeout=processorMode==='local'?3000:15000;
+    const d=await api('/api/projects',{timeout});
     for(const p of (d.projects||[]))merged.set(p.id,{...p,_base:API,_source:processorMode});
   }catch(e){primaryError=e}
 
-  if(isDesktopComputer()){
+  // Only query localhost separately when the primary processor is Cloud.
+  // Local mode already queried localhost above, so do not hit it twice.
+  if(isDesktopComputer()&&processorMode!=='local'){
     try{
-      const alive=await probeLocalAgent(1500);
-      if(alive){
-        const r=await fetch(LOCAL_API+'/api/projects',{cache:'no-store'});
-        if(r.ok){
-          const d=await r.json();
-          for(const p of (d.projects||[]))merged.set(p.id,{...p,_base:LOCAL_API,_source:'local'});
-        }
+      if(await probeLocalAgent(700)){
+        const controller=new AbortController();
+        const timer=setTimeout(()=>controller.abort(),1800);
+        try{
+          const r=await fetch(LOCAL_API+'/api/projects',{cache:'no-store',signal:controller.signal});
+          if(r.ok){
+            const d=await r.json();
+            for(const p of (d.projects||[]))merged.set(p.id,{...p,_base:LOCAL_API,_source:'local'});
+          }
+        }finally{clearTimeout(timer)}
       }
     }catch{}
   }
 
-  projects=[...merged.values()].sort((a,b)=>String(b.updatedAt||b.createdAt||'').localeCompare(String(a.updatedAt||a.createdAt||'')));
+  projects=[...merged.values()].sort((x,y)=>String(y.updatedAt||y.createdAt||'').localeCompare(String(x.updatedAt||x.createdAt||'')));
   if(projects.length||!primaryError)renderProjects();
   else $('projectList').innerHTML='<div class="empty-list"><strong>Processor unavailable</strong><span>'+esc(primaryError.message)+'</span></div>';
 }
@@ -1298,7 +1305,7 @@ document.querySelectorAll('.repo-nav button').forEach(b=>b.onclick=()=>switchSec
 window.addEventListener('keydown',e=>{if((e.ctrlKey||e.metaKey)&&e.key.toLowerCase()==='s'){e.preventDefault();saveFile()}});
 (async()=>{
   await finishGithubHandoff();
-  await loadGithub();
+  const githubLoadPromise=loadGithub().catch(()=>{});
 
   if(!isDesktopComputer()){
     processorMode='cloud';API=CLOUD_API;rememberProcessorMode('cloud');
@@ -1311,7 +1318,6 @@ window.addEventListener('keydown',e=>{if((e.ctrlKey||e.metaKey)&&e.key.toLowerCa
     }
   }else{
     API=processorMode==='local'?LOCAL_API:CLOUD_API;
-    if(processorMode==='local')await probeLocalAgent(1500);
   }
 
   renderProcessorMode();
@@ -1321,6 +1327,7 @@ window.addEventListener('keydown',e=>{if((e.ctrlKey||e.metaKey)&&e.key.toLowerCa
   else{
     $('projectList').innerHTML='<div class="empty-list"><strong>Local processor is offline</strong><span>APK Studio will reconnect automatically when the background agent is available.</span></div>';
   }
+  await githubLoadPromise;
 })();
 </script>
 </body>
