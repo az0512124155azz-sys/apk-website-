@@ -20,7 +20,7 @@ const sessionSecret=process.env.SESSION_SECRET||'apk-studio-dev-secret-change-me
 const githubClientId=process.env.GITHUB_CLIENT_ID||'';
 const githubClientSecret=process.env.GITHUB_CLIENT_SECRET||'';
 const publicOrigin=process.env.PUBLIC_ORIGIN||'https://apk-website-sable.vercel.app';
-const AGENT_VERSION='1.3.0';
+const AGENT_VERSION='1.3.1';
 app.use(cors({origin:true}));
 app.use((req,_res,next)=>{ console.log(new Date().toISOString(), req.method, req.url); next(); });
 app.use(express.json({limit:'10mb'}));
@@ -366,12 +366,60 @@ app.post('/api/projects/upload',upload.single('apk'),async(req,res,next)=>{
   }catch(e){next(e);}
 });
 
+async function getProjectSigningState(id,{prepare=false}={}){
+  const meta=await readMeta(id).catch(()=>({}));
+  if((meta.platform||'android')!=='android'){
+    return {mode:'none',configured:false,automaticReady:false,connected:true,ready:true,status:'not-required'};
+  }
+
+  const dir=projectDir(id);
+  const cfg=await fs.readJson(path.join(dir,'signing-config.json')).catch(()=>null);
+  const customReady=!!cfg && await fs.pathExists(path.join(dir,'user-signing.keystore'));
+  let automaticReady=await fs.pathExists(path.join(dir,'apkstudio-signing.jks'));
+  let error=meta.signingError||null;
+
+  if(prepare && !customReady && !automaticReady){
+    try{
+      await ensureAutomaticSigningKey(id);
+      automaticReady=await fs.pathExists(path.join(dir,'apkstudio-signing.jks'));
+      error=null;
+    }catch(e){
+      error=String(e?.message||e||'Automatic signing key creation failed').slice(-4000);
+      await writeMeta(id,{signingReady:false,signingError:error}).catch(()=>{});
+    }
+  }
+
+  const connected=customReady||automaticReady;
+  if(connected && (meta.signingReady!==true || meta.signingError)){
+    await writeMeta(id,{signingReady:true,signingError:null}).catch(()=>{});
+  }
+
+  return {
+    mode:customReady?'custom':'apkstudio',
+    configured:customReady,
+    automaticReady,
+    connected,
+    ready:connected,
+    status:connected?'connected':error?'error':'preparing',
+    keySource:customReady?'original':'automatic',
+    alias:customReady?(cfg?.alias||null):(automaticReady?'apkstudio':null),
+    fileName:customReady?(cfg?.fileName||null):(automaticReady?'apkstudio-signing.jks':null),
+    autoFound:false,
+    error:error||null
+  };
+}
+
 app.get('/api/projects/:id',async(req,res,next)=>{
   try{
-    const m=await ensureProjectAvailable(req,req.params.id);
+    let m=await ensureProjectAvailable(req,req.params.id);
+    let signing=null;
+    if((m.platform||'android')==='android' && m.status==='ready'){
+      signing=await getProjectSigningState(req.params.id,{prepare:true});
+      m=await readMeta(req.params.id).catch(()=>m);
+    }
     const log=await fs.readFile(path.join(projectDir(req.params.id),'build.log'),'utf8').catch(()=> '');
     const buildRuns=await listBuildRuns(req.params.id);
-    res.json({...m,log,buildRuns});
+    res.json({...m,signing,log,buildRuns});
   }catch(e){next(e);}
 });
 
@@ -431,34 +479,19 @@ app.post('/api/projects/:id/signing/auto-find',async(req,res,next)=>{
 
 app.get('/api/projects/:id/signing',async(req,res,next)=>{
   try{
-    await ensureProjectAvailable(req,req.params.id);
-    const dir=projectDir(req.params.id);
-    const cfg=await fs.readJson(path.join(dir,'signing-config.json')).catch(()=>null);
-    res.json({
-      mode:cfg?'custom':'apkstudio',
-      configured:!!cfg,
-      alias:cfg?.alias||null,
-      fileName:cfg?.fileName||null,
-      autoFound:false,
-      automaticReady:await fs.pathExists(path.join(dir,'apkstudio-signing.jks'))
-    });
+    const meta=await ensureProjectAvailable(req,req.params.id);
+    const state=await getProjectSigningState(req.params.id,{prepare:(meta.platform||'android')==='android'&&meta.status==='ready'});
+    res.json(state);
   }catch(e){next(e);}
 });
 
 app.post('/api/projects/:id/signing/prepare',async(req,res,next)=>{
   try{
     await ensureProjectAvailable(req,req.params.id);
-    const dir=projectDir(req.params.id);
-    const cfg=await fs.readJson(path.join(dir,'signing-config.json')).catch(()=>null);
-    if(cfg && await fs.pathExists(path.join(dir,'user-signing.keystore'))){
-      return res.json({ok:true,mode:'custom',configured:true,automaticReady:false});
-    }
-    await ensureAutomaticSigningKey(req.params.id);
-    res.json({ok:true,mode:'apkstudio',configured:false,automaticReady:true});
-  }catch(e){
-    await writeMeta(req.params.id,{signingReady:false,signingError:String(e?.message||e).slice(-4000)}).catch(()=>{});
-    next(e);
-  }
+    const state=await getProjectSigningState(req.params.id,{prepare:true});
+    if(!state.connected)return res.status(500).json({...state,error:state.error||'Automatic signing key could not be created'});
+    res.json({ok:true,...state});
+  }catch(e){next(e);}
 });
 
 app.post('/api/projects/:id/signing',signingUpload.single('keystore'),async(req,res,next)=>{
@@ -536,12 +569,9 @@ app.post('/api/projects/:id/build',async(req,res,next)=>{
     if(meta.buildStatus==='building')return res.status(202).json({ok:true,alreadyBuilding:true,stage:meta.buildStage||'building'});
     const platform=meta.platform||'android';
     if(platform==='android'){
-      const dir=projectDir(req.params.id);
-      const cfg=await fs.readJson(path.join(dir,'signing-config.json')).catch(()=>null);
-      const customReady=!!cfg && await fs.pathExists(path.join(dir,'user-signing.keystore'));
-      const automaticReady=await fs.pathExists(path.join(dir,'apkstudio-signing.jks'));
-      if(!customReady && !automaticReady){
-        return res.status(409).json({error:'Signing key is not ready yet. Wait for APK Studio to prepare the signing key before building.'});
+      const signing=await getProjectSigningState(req.params.id,{prepare:true});
+      if(!signing.connected){
+        return res.status(409).json({error:signing.error||'APK Studio could not create or connect the automatic signing key.'});
       }
     }
     if(platform!=='android'&&meta.buildSupported===false){
