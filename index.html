@@ -23,6 +23,7 @@ html,body{background:#0d1117;color:#e6edf3;margin:0}.hidden{display:none!importa
 .github-menu button:hover,.github-menu a:hover{background:#21262d}
 .github-menu .danger{color:#ff7b72}
 .github-connected-dot{width:7px;height:7px;border-radius:50%;background:#3fb950;display:inline-block}
+.signing-panel{margin-top:14px;border:1px solid #30363d;border-radius:6px;overflow:hidden}.signing-row{min-height:48px;display:flex;align-items:center;gap:12px;padding:0 14px;background:#0d1117}.signing-row>span:first-child{width:190px;color:#8b949e;font-size:12px}.signing-row strong{font-size:12px;flex:1}.signing-form{border-top:1px solid #21262d;padding:14px;background:#0d1117;display:grid;grid-template-columns:1.2fr 1fr 1fr;gap:10px}.signing-form input{height:34px;border:1px solid #30363d;border-radius:6px;background:#010409;color:#e6edf3;padding:0 9px;min-width:0}.signing-actions{grid-column:1/-1;display:flex;gap:8px}.signing-note{grid-column:1/-1;color:#8b949e;font-size:11px;line-height:1.5}
 .mode-button{height:28px;border:1px solid #30363d;border-radius:6px;background:#161b22;color:#c9d1d9;padding:0 9px;font-size:11px;cursor:pointer}.mode-button:hover{background:#21262d}.mode-overlay{position:fixed;inset:0;background:#010409cc;display:grid;place-items:center;z-index:1000;padding:18px}.mode-dialog{width:min(560px,100%);background:#0d1117;border:1px solid #30363d;border-radius:10px;box-shadow:0 24px 70px #000a;padding:20px}.mode-dialog h2{margin:0 0 6px;font-size:20px}.mode-dialog>p{margin:0 0 18px;color:#8b949e;font-size:12px}.mode-options{display:grid;grid-template-columns:1fr 1fr;gap:10px}.mode-option{border:1px solid #30363d;border-radius:8px;background:#161b22;color:#e6edf3;text-align:left;padding:14px;cursor:pointer}.mode-option:hover{border-color:#58a6ff;background:#1b2430}.mode-option strong{display:block;font-size:14px;margin-bottom:5px}.mode-option span{display:block;color:#8b949e;font-size:11px;line-height:1.45}.mode-local-help{margin-top:12px;border-top:1px solid #21262d;padding-top:12px;color:#8b949e;font-size:11px}.mode-local-help a{color:#58a6ff}.mode-note{margin-top:12px;color:#6e7681;font-size:10px}@media(max-width:680px){.mode-options{grid-template-columns:1fr}.github-login{display:none}.github-account-button{padding:0 7px}.github-menu{right:0}.mobile-upload{display:inline-flex}
 .mobile-upload{display:inline-flex}.topbar .repo-crumb,.topbar .muted,.topbar .repo-current{display:none}.projects-head{align-items:flex-start}.status-banner{margin:8px 12px 0}.repo-titlebar,.repo-nav{padding-left:12px;padding-right:12px}.code-workspace{display:block;height:auto}.explorer{height:280px}.editor-area{height:520px}.button.quiet{display:none}}
 </style>
@@ -160,6 +161,22 @@ html,body{background:#0d1117;color:#e6edf3;margin:0}.hidden{display:none!importa
   <section id="buildSection" class="repository-content hidden">
     <div class="page-heading build-heading"><div><h2>Build</h2><p>Rebuild the editable APK.</p></div><button class="button primary" id="buildPage">⚒ Build APK</button></div>
     <div class="build-table" id="buildTable"></div>
+    <div class="signing-panel">
+      <div class="signing-row">
+        <span>APK signing</span>
+        <strong id="signingStatus">APK Studio project key</strong>
+        <button class="button small" id="configureSigning">Use original key</button>
+        <button class="button small hidden" id="removeSigning">Use APK Studio key</button>
+      </div>
+      <div class="signing-form hidden" id="signingForm">
+        <input id="keystoreFile" type="file" accept=".jks,.keystore">
+        <input id="keyAlias" placeholder="Key alias">
+        <input id="storePass" type="password" placeholder="Keystore password">
+        <input id="keyPass" type="password" placeholder="Key password (optional)">
+        <div class="signing-note">Use the original keystore only if you own it. This lets Android accept the rebuilt APK as an update to the already-installed app.</div>
+        <div class="signing-actions"><button class="button primary" id="saveSigning">Save signing key</button><button class="button" id="cancelSigning">Cancel</button></div>
+      </div>
+    </div>
     <a class="artifact-row hidden" id="apkArtifact">↓ <div><strong id="artifactName">app-rebuilt-signed.apk</strong><span id="artifactStatus">Signed APK ready to install</span></div></a>
     <section class="log-section"><div class="log-head"><strong id="logTitle">Processing log</strong><span id="logSubtitle">live output</span></div><pre id="buildLog">Waiting for processor output…</pre></section>
   </section>
@@ -174,6 +191,7 @@ const $=id=>document.getElementById(id);
 let projects=[],current=null,root='editable',dir='',selected='',saved='',pollTimer=null,openedAt=0;
 let lastProgressDone=null,lastProgressChangedAt=0,recoveryRequested=false;
 let githubSession={connected:false,user:null},githubProjects=[];
+let signingInfo={mode:'apkstudio',configured:false};
 
 const rootMeta={
  editable:{title:'Rebuildable APK',hint:'Manifest, resources and Smali'},
@@ -414,7 +432,7 @@ async function openProject(id){
   clearInterval(pollTimer);current=await api('/api/projects/'+id,{timeout:45000});openedAt=Date.now();lastProgressDone=null;lastProgressChangedAt=Date.now();recoveryRequested=false;
   $('projectsView').classList.add('hidden');$('workspaceView').classList.remove('hidden');
   const name=(current.originalName||id).replace(/\.apk$/i,'');$('repoName').textContent=name;$('topRepoName').textContent=name;
-  $('zipLink').href=API+'/api/projects/'+id+'/download';renderProject();dir='';selected='';setRoot('editable');loadDir();
+  $('zipLink').href=API+'/api/projects/'+id+'/download';renderProject();dir='';selected='';setRoot('editable');loadDir();loadSigningStatus();
   pollTimer=setInterval(refreshCurrent,1500);
 }
 function goHome(){clearInterval(pollTimer);current=null;$('workspaceView').classList.add('hidden');$('projectsView').classList.remove('hidden');loadProjects()}
@@ -432,7 +450,7 @@ async function refreshCurrent(){
       try{await api('/api/projects/'+current.id+'/recover',{method:'POST',timeout:30000})}catch(err){recoveryRequested=false}
     }
     renderProject();
-    if(current.status==='ready'||current.status==='error'){clearInterval(pollTimer);loadDir()}
+    if((current.status==='ready'||current.status==='error')&&current.buildStatus!=='building'){clearInterval(pollTimer);loadDir()}
   }
   catch(e){
     $('statusBanner').className='status-banner error';$('statusBanner').classList.remove('hidden');
@@ -462,7 +480,10 @@ function renderProject(){
     ['File',current.originalName],['Status',current.status],['Stage',current.stage||'—'],['Size',bytes(current.size||0)],
     ['JADX exit code',current.jadxExitCode??'—'],['Decoded files',current.editableFileCount??'—']
   ].map(x=>'<div><span>'+esc(x[0])+'</span><strong>'+esc(x[1])+'</strong></div>').join('');
-  $('buildTable').innerHTML='<div><span>APK rebuild</span><span class="project-status '+esc(current.buildStatus||'idle')+'">● '+esc(current.buildStatus||'idle')+'</span><code>'+esc(current.buildError||'')+'</code></div>';
+  const buildState=current.buildStatus||'idle';
+  const buildStage=current.buildStage||buildState;
+  const buildElapsed=current.buildStartedAt&&buildState==='building'?Math.max(0,Math.floor((Date.now()-new Date(current.buildStartedAt).getTime())/1000)):null;
+  $('buildTable').innerHTML='<div><span>APK rebuild</span><span class="project-status '+esc(buildState)+'">● '+esc(buildState)+(buildState==='building'?' · '+esc(buildStage)+(buildElapsed!==null?' · '+buildElapsed+'s':''):'')+'</span><code>'+esc(current.buildError||'')+'</code></div>';
   const buildMarker='=== BUILD START ===';
   const fullLog=current.log||'';
   const hasBuild=fullLog.includes(buildMarker);
@@ -498,7 +519,55 @@ async function openFile(path){
   }catch(e){alert(e.message)}
 }
 async function saveFile(){if(!selected||root!=='editable')return;const q=new URLSearchParams({root,path:selected});try{await api('/api/projects/'+current.id+'/file?'+q,{method:'PUT',headers:{'content-type':'application/json'},body:JSON.stringify({content:$('editor').value}),timeout:30000});saved=$('editor').value;$('dirtyState').textContent='';$('saveFile').disabled=true}catch(e){alert(e.message)}}
-async function build(){if(!current)return;try{await api('/api/projects/'+current.id+'/build',{method:'POST',timeout:30000});current.buildStatus='building';switchSection('build');renderProject();clearInterval(pollTimer);pollTimer=setInterval(refreshCurrent,1500)}catch(e){alert(e.message)}}
+async function build(){
+  if(!current)return;
+  try{
+    const d=await api('/api/projects/'+current.id+'/build',{method:'POST',timeout:30000});
+    current.buildStatus='building';
+    current.buildStage=d.stage||current.buildStage||'queued';
+    current.buildStartedAt=current.buildStartedAt||new Date().toISOString();
+    switchSection('build');
+    renderProject();
+    clearInterval(pollTimer);
+    pollTimer=setInterval(refreshCurrent,1500);
+  }catch(e){alert(e.message)}
+}
+async function loadSigningStatus(){
+  if(!current)return;
+  try{
+    signingInfo=await api('/api/projects/'+current.id+'/signing',{timeout:15000});
+    $('signingStatus').textContent=signingInfo.configured?'Original/custom keystore · '+(signingInfo.alias||'configured'):'APK Studio project key';
+    $('removeSigning').classList.toggle('hidden',!signingInfo.configured);
+    $('configureSigning').textContent=signingInfo.configured?'Replace original key':'Use original key';
+  }catch(e){}
+}
+async function saveSigningKey(){
+  if(!current)return;
+  const file=$('keystoreFile').files?.[0];
+  const alias=$('keyAlias').value.trim();
+  const storePass=$('storePass').value;
+  const keyPass=$('keyPass').value;
+  if(!file)return alert('Choose a .jks or .keystore file');
+  if(!alias)return alert('Enter the key alias');
+  if(!storePass)return alert('Enter the keystore password');
+  const fd=new FormData();fd.append('keystore',file);fd.append('alias',alias);fd.append('storePass',storePass);fd.append('keyPass',keyPass);
+  try{
+    $('saveSigning').disabled=true;$('saveSigning').textContent='Saving…';
+    signingInfo=await api('/api/projects/'+current.id+'/signing',{method:'POST',body:fd,timeout:60000});
+    $('signingForm').classList.add('hidden');
+    current.buildStatus='stale';current.buildArtifact=null;
+    await loadSigningStatus();renderProject();
+  }catch(e){alert('Signing key failed: '+e.message)}
+  finally{$('saveSigning').disabled=false;$('saveSigning').textContent='Save signing key'}
+}
+async function removeSigningKey(){
+  if(!current||!confirm('Switch back to the APK Studio signing key?'))return;
+  try{
+    await api('/api/projects/'+current.id+'/signing',{method:'DELETE',timeout:30000});
+    current.buildStatus='stale';current.buildArtifact=null;
+    await loadSigningStatus();renderProject();
+  }catch(e){alert(e.message)}
+}
 async function pushGithub(){
   if(!current)return;
   if(processorMode==='local'){alert('This project is currently running on your computer. Direct GitHub workspace sync for Local mode is the next step; switch to Cloud to use server-side Push to GitHub for now.');return;}
@@ -541,7 +610,12 @@ $('dropZone').ondragover=e=>{e.preventDefault();$('dropZone').classList.add('dra
 $('projectSearch').oninput=renderProjects;$('backProjects').onclick=goHome;$('backProjects2').onclick=goHome;$('brandHome').onclick=loadProjects;
 $('rootPicker').onclick=()=>$('rootMenu').classList.toggle('hidden');document.querySelectorAll('#rootMenu button').forEach(b=>b.onclick=()=>setRoot(b.dataset.root));
 $('refreshTree').onclick=loadDir;$('saveFile').onclick=saveFile;$('editor').oninput=()=>{const dirty=$('editor').value!==saved;$('dirtyState').textContent=dirty?'● Unsaved':'';$('saveFile').disabled=!dirty||root!=='editable'};
-$('buildTop').onclick=build;$('buildPage').onclick=build;document.querySelectorAll('.repo-nav button').forEach(b=>b.onclick=()=>switchSection(b.dataset.section));
+$('buildTop').onclick=build;$('buildPage').onclick=build;
+$('configureSigning').onclick=()=>$('signingForm').classList.remove('hidden');
+$('cancelSigning').onclick=()=>$('signingForm').classList.add('hidden');
+$('saveSigning').onclick=()=>saveSigningKey();
+$('removeSigning').onclick=()=>removeSigningKey();
+document.querySelectorAll('.repo-nav button').forEach(b=>b.onclick=()=>switchSection(b.dataset.section));
 window.addEventListener('keydown',e=>{if((e.ctrlKey||e.metaKey)&&e.key.toLowerCase()==='s'){e.preventDefault();saveFile()}});
 (async()=>{
   if(!isDesktopComputer()){processorMode='cloud';API=CLOUD_API;localStorage.setItem('apkstudio_processor_mode','cloud')}
