@@ -164,17 +164,22 @@ html,body{background:#0d1117;color:#e6edf3;margin:0}.hidden{display:none!importa
     <div class="signing-panel">
       <div class="signing-row">
         <span>APK signing</span>
-        <strong id="signingStatus">APK Studio project key</strong>
-        <button class="button small" id="configureSigning">Use original key</button>
-        <button class="button small hidden" id="removeSigning">Use APK Studio key</button>
+        <strong id="signingStatus">Automatic ✅</strong>
+        <button class="button small" id="configureSigning">Advanced</button>
       </div>
       <div class="signing-form hidden" id="signingForm">
+        <div class="signing-note" style="grid-column:1/-1">
+          APK Studio signs every rebuilt APK automatically. You only need this section if you want to use the app's original signing key so the rebuilt APK can be installed as an update over an existing installation.
+        </div>
         <input id="keystoreFile" type="file" accept=".jks,.keystore">
         <input id="keyAlias" placeholder="Key alias">
         <input id="storePass" type="password" placeholder="Keystore password">
         <input id="keyPass" type="password" placeholder="Key password (optional)">
-        <div class="signing-note">Use the original keystore only if you own it. This lets Android accept the rebuilt APK as an update to the already-installed app.</div>
-        <div class="signing-actions"><button class="button primary" id="saveSigning">Save signing key</button><button class="button" id="cancelSigning">Cancel</button></div>
+        <div class="signing-actions">
+          <button class="button primary" id="saveSigning">Use original key</button>
+          <button class="button hidden" id="removeSigning">Forget original key</button>
+          <button class="button" id="cancelSigning">Close</button>
+        </div>
       </div>
     </div>
     <a class="artifact-row hidden" id="apkArtifact">↓ <div><strong id="artifactName">app-rebuilt-signed.apk</strong><span id="artifactStatus">Signed APK ready to install</span></div></a>
@@ -536,9 +541,9 @@ async function loadSigningStatus(){
   if(!current)return;
   try{
     signingInfo=await api('/api/projects/'+current.id+'/signing',{timeout:15000});
-    $('signingStatus').textContent=signingInfo.configured?'Original/custom keystore · '+(signingInfo.alias||'configured'):'APK Studio project key';
+    $('signingStatus').textContent=signingInfo.configured?'Automatic ✅ · Original key':'Automatic ✅ · APK Studio key';
     $('removeSigning').classList.toggle('hidden',!signingInfo.configured);
-    $('configureSigning').textContent=signingInfo.configured?'Replace original key':'Use original key';
+    $('configureSigning').textContent='Advanced';
   }catch(e){}
 }
 async function saveSigningKey(){
@@ -554,9 +559,10 @@ async function saveSigningKey(){
   try{
     $('saveSigning').disabled=true;$('saveSigning').textContent='Saving…';
     signingInfo=await api('/api/projects/'+current.id+'/signing',{method:'POST',body:fd,timeout:60000});
-    $('signingForm').classList.add('hidden');
     current.buildStatus='stale';current.buildArtifact=null;
     await loadSigningStatus();renderProject();
+    $('signingStatus').textContent='Automatic ✅ · Original key';
+    setTimeout(()=>$('signingForm').classList.add('hidden'),500);
   }catch(e){alert('Signing key failed: '+e.message)}
   finally{$('saveSigning').disabled=false;$('saveSigning').textContent='Save signing key'}
 }
