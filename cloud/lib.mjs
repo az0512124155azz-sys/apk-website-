@@ -16,7 +16,9 @@ export async function readMeta(id){return fs.readJson(path.join(projectDir(id),'
 export async function writeMeta(id,patch){const f=path.join(projectDir(id),'project.json');const prev=await fs.readJson(f).catch(()=>({}));const next={...prev,...patch,updatedAt:new Date().toISOString()};await fs.writeJson(f,next,{spaces:2});return next;}
 export async function log(id,msg){const s=new Date().toISOString().slice(11,19);const line=`[${s}] ${msg}`;console.log(`[JOB ${id}] ${line}`);await fs.appendFile(path.join(projectDir(id),'build.log'),line+'\n');}
 export async function run(id,cmd,args,accepted=[0],options={}){
-  await log(id,`$ ${cmd} ${args.map(x=>JSON.stringify(x)).join(' ')}`);
+  const secretFlags=new Set(['-storepass','-keypass','--storepass','--keypass']);
+  const safeArgs=args.map((x,i)=>secretFlags.has(String(args[i-1]||''))?'***':x);
+  await log(id,`$ ${cmd} ${safeArgs.map(x=>JSON.stringify(x)).join(' ')}`);
   return new Promise((resolve,reject)=>{
     const p=spawn(cmd,args,{shell:false});
     let out='',err='',settled=false,idleTimer=null,totalTimer=null;
