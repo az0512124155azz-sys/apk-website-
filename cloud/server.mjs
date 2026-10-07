@@ -641,13 +641,12 @@ app.get('/api/projects/:id/build-runs/:runId/steps/:stepId/log',async(req,res,ne
 
 app.post('/api/remote-build',remoteWorkspaceUpload.single('workspace'),async(req,res,next)=>{
   let uploadPath=req.file?.path||'';
+  let staging='';
   try{
     if(!req.file)throw new Error('Workspace ZIP is required');
-    const id=crypto.randomUUID();
-    const dir=projectDir(id);
-    await fs.ensureDir(dir);
 
-    const staging=path.join(os.tmpdir(),'apk-studio-remote-extract-'+id);
+    const tempToken=crypto.randomUUID();
+    staging=path.join(os.tmpdir(),'apk-studio-remote-extract-'+tempToken);
     await fs.remove(staging).catch(()=>{});
     await fs.ensureDir(staging);
 
@@ -663,52 +662,81 @@ app.post('/api/remote-build',remoteWorkspaceUpload.single('workspace'),async(req
 
     const editableSrc=path.join(staging,'editable');
     if(!await fs.pathExists(editableSrc)){
-      await fs.remove(staging).catch(()=>{});
       throw new Error('Workspace ZIP does not contain an editable project');
     }
 
-    await fs.copy(editableSrc,path.join(dir,'editable'),{overwrite:true});
+    const incomingMeta=await fs.readJson(path.join(staging,'project.json')).catch(()=>({}));
+    const incomingId=String(incomingMeta.id||'');
+    const id=/^[0-9a-f-]{16,64}$/i.test(incomingId)?incomingId:crypto.randomUUID();
+    const dir=projectDir(id);
+    await fs.ensureDir(dir);
+
+    const previousMeta=await fs.readJson(path.join(dir,'project.json')).catch(()=>null);
+    const sameRevision=!!(
+      previousMeta?.editableRevision &&
+      incomingMeta?.editableRevision &&
+      previousMeta.editableRevision===incomingMeta.editableRevision
+    );
+
+    if(!sameRevision){
+      await fs.remove(path.join(dir,'editable')).catch(()=>{});
+      await fs.copy(editableSrc,path.join(dir,'editable'),{overwrite:true});
+    }
 
     for(const name of [
-      'project.json',
       'signing-config.json',
       'user-signing.keystore',
       'automatic-signing.json',
       'apkstudio-signing.jks'
     ]){
       const src=path.join(staging,name);
-      if(await fs.pathExists(src))await fs.copy(src,path.join(dir,name),{overwrite:true});
+      const dest=path.join(dir,name);
+      if(await fs.pathExists(src)){
+        await fs.copy(src,dest,{overwrite:true});
+      }
     }
 
-    await fs.remove(staging).catch(()=>{});
-
-    const originalMeta=await fs.readJson(path.join(dir,'project.json')).catch(()=>({}));
     const meta={
-      ...originalMeta,
+      ...(previousMeta||{}),
+      ...incomingMeta,
       id,
       platform:'android',
       format:'apk',
       status:'ready',
       stage:'ready',
-      buildStatus:null,
-      buildStage:null,
-      buildArtifact:null,
-      buildError:null,
       remoteBuild:true,
-      createdAt:new Date().toISOString(),
+      remoteCacheHit:sameRevision,
+      createdAt:previousMeta?.createdAt||incomingMeta?.createdAt||new Date().toISOString(),
       updatedAt:new Date().toISOString()
     };
     await fs.writeJson(path.join(dir,'project.json'),meta,{spaces:2});
     if(!await fs.pathExists(path.join(dir,'build.log')))await fs.writeFile(path.join(dir,'build.log'),'');
+
     const signing=await getProjectSigningState(id,{prepare:true});
     if(!signing.connected)throw new Error(signing.error||'Remote builder could not connect a signing key');
 
+    const freshMeta=await readMeta(id);
+    if(freshMeta.buildStatus==='building'){
+      const runs=await listBuildRuns(id);
+      return res.status(202).json({ok:true,id,alreadyBuilding:true,run:runs[0]||null,cache:sameRevision});
+    }
+
     const run=await createBuildRun(id,{platform:'android',title:'Build APK'});
-    await writeMeta(id,{buildStatus:'building',buildStage:'queued',buildStartedAt:new Date().toISOString(),buildError:null,activeBuildRunId:run.id});
+    await writeMeta(id,{
+      buildStatus:'building',
+      buildStage:'queued',
+      buildStartedAt:new Date().toISOString(),
+      buildError:null,
+      activeBuildRunId:run.id,
+      remoteCacheHit:sameRevision
+    });
     void rebuild(id,{runId:run.id});
-    res.status(202).json({ok:true,id,run});
+    res.status(202).json({ok:true,id,run,cache:sameRevision});
   }catch(e){next(e)}
-  finally{if(uploadPath)await fs.remove(uploadPath).catch(()=>{})}
+  finally{
+    if(uploadPath)await fs.remove(uploadPath).catch(()=>{});
+    if(staging)await fs.remove(staging).catch(()=>{});
+  }
 });
 
 app.post('/api/projects/:id/build',async(req,res,next)=>{
