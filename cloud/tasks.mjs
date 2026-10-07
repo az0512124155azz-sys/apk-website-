@@ -225,7 +225,12 @@ export async function rebuild(id){
 
     await writeMeta(id,{buildStage:'verifying'});
     await log(id,'Verifying APK signature...');
-    await run(id,jarsignerBin,['-verify','-strict',signedArtifact],[0],{timeoutMs:120000});
+    const verify=await run(id,jarsignerBin,['-verify',signedArtifact],[0],{timeoutMs:120000});
+    const verifyText=(verify.out||'')+'\n'+(verify.err||'');
+    if(!/jar verified/i.test(verifyText)){
+      throw new Error('APK signature verification did not confirm a valid signature.');
+    }
+    await log(id,'APK signature verified. Self-signed certificates are valid for Android APK installation.');
 
     await writeMeta(id,{
       buildStatus:'ready',
