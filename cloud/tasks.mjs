@@ -198,11 +198,19 @@ export async function decompile(id,{forceJadxOom=false,skipPerDex=false}={}){
     ],[0]);
 
     const files=await walk(editable);
-    try{await ensureAutomaticSigningKey(id)}
-    catch(signError){await log(id,'WARNING: Automatic signing key preparation failed: '+shortError(signError))}
+    let signingReady=false,signingError=null;
+    try{
+      await ensureAutomaticSigningKey(id);
+      signingReady=true;
+    }catch(signError){
+      signingError=shortError(signError);
+      await log(id,'WARNING: Automatic signing key preparation failed: '+signingError);
+    }
     await writeMeta(id,{
       status:'ready',
       stage:'ready',
+      signingReady,
+      signingError,
       editableFileCount:files.length,
       jadxWarnings,
       readableAvailable,
