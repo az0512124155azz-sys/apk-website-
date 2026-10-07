@@ -20,7 +20,7 @@ function Expand-ZipClean([string]$zip,[string]$dest){
   Expand-Archive -Force -Path $zip -DestinationPath $dest
 }
 function Wait-Health {
-  for($i=0;$i -lt 90;$i++){
+  for($i=0;$i -lt 30;$i++){
     try{
       $r=Invoke-RestMethod -UseBasicParsing -Uri 'http://127.0.0.1:32145/health' -TimeoutSec 2
       if($r.ok){return $true}
@@ -96,66 +96,79 @@ Pop-Location
 
 New-Item -ItemType Directory -Force -Path $workspace | Out-Null
 
-$start=Join-Path $installDir 'start-local-agent.cmd'
+$runner=Join-Path $installDir 'run-agent.ps1'
 $nodeExeEsc=$nodeExe
-$java=Join-Path $cloud '.tools\java\bin\java.exe'
-$cmd=@"
-@echo off
-set PORT=32145
-set WORKSPACE_ROOT=$workspace
-set JAVA_BIN=$java
-set NODE_ENV=production
-set LOCAL_PROCESSOR=1
-set APK_STUDIO_JAVA_XMS=256m
-set APK_STUDIO_JAVA_XMX=4096m
-cd /d "$cloud"
-"$nodeExeEsc" server.mjs >> "$installDir\agent.log" 2>&1
-"@
-Set-Content -Path $start -Value $cmd -Encoding ASCII
-
-# Start automatically with Windows and restart if the agent crashes.
-$taskName='APK Studio Local Agent'
-try{
-  $action=New-ScheduledTaskAction -Execute 'cmd.exe' -Argument ('/c "'+$start+'"')
-  $trigger=New-ScheduledTaskTrigger -AtLogOn -User $env:USERNAME
-  $settings=New-ScheduledTaskSettingsSet -RestartCount 999 -RestartInterval (New-TimeSpan -Minutes 1) -StartWhenAvailable -ExecutionTimeLimit ([TimeSpan]::Zero)
-  Register-ScheduledTask -TaskName $taskName -Action $action -Trigger $trigger -Settings $settings -Description 'Keeps APK Studio Local Agent running for local APK processing.' -Force | Out-Null
-}catch{
-  Write-Host 'Scheduled task setup failed; using Startup shortcut fallback.' -ForegroundColor Yellow
-  $startup=Join-Path $env:APPDATA 'Microsoft\Windows\Start Menu\Programs\Startup\APK Studio Local Agent.lnk'
-  $w=New-Object -ComObject WScript.Shell
-  $link=$w.CreateShortcut($startup)
-  $link.TargetPath=$start
-  $link.WorkingDirectory=$installDir
-  $link.WindowStyle=7
-  $link.Save()
+$java=Join-Path $cloud '.tools\\java\\bin\\java.exe'
+$agentLog=Join-Path $installDir 'agent.log'
+$runnerBody=@"
+\$ErrorActionPreference='SilentlyContinue'
+\$env:PORT='32145'
+\$env:WORKSPACE_ROOT='$workspace'
+\$env:JAVA_BIN='$java'
+\$env:NODE_ENV='production'
+\$env:LOCAL_PROCESSOR='1'
+\$env:APK_STUDIO_JAVA_XMS='256m'
+\$env:APK_STUDIO_JAVA_XMX='4096m'
+Set-Location '$cloud'
+while(\$true){
+  try{
+    \$p=Start-Process -FilePath '$nodeExeEsc' -ArgumentList 'server.mjs' -WorkingDirectory '$cloud' -WindowStyle Hidden -RedirectStandardOutput '$agentLog' -RedirectStandardError '$agentLog' -PassThru
+    \$p.WaitForExit()
+  }catch{}
+  Start-Sleep -Seconds 2
 }
+"@
+Set-Content -Path $runner -Value $runnerBody -Encoding UTF8
 
-# Register a local protocol so the website can restart the agent with one click.
-$launcher=Join-Path $installDir 'launch-local-agent.ps1'
-$launcherBody=@'
-$ErrorActionPreference='SilentlyContinue'
+# Remove old visible launchers/tasks if present.
+try{Unregister-ScheduledTask -TaskName 'APK Studio Local Agent' -Confirm:$false -ErrorAction SilentlyContinue}catch{}
+$startupOld=Join-Path $env:APPDATA 'Microsoft\\Windows\\Start Menu\\Programs\\Startup\\APK Studio Local Agent.lnk'
+Remove-Item -Force $startupOld -ErrorAction SilentlyContinue
+
+# Create a hidden Startup launcher. No terminal window is shown at login.
+$launcher=Join-Path $installDir 'launch-hidden.vbs'
+$vbs=@"
+Set shell = CreateObject("WScript.Shell")
+shell.Run "powershell.exe -NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File ""$runner""", 0, False
+"@
+Set-Content -Path $launcher -Value $vbs -Encoding ASCII
+
+$startup=Join-Path $env:APPDATA 'Microsoft\\Windows\\Start Menu\\Programs\\Startup\\APK Studio Local Agent.lnk'
+$w=New-Object -ComObject WScript.Shell
+$link=$w.CreateShortcut($startup)
+$link.TargetPath="$env:WINDIR\\System32\\wscript.exe"
+$link.Arguments='"' + $launcher + '"'
+$link.WorkingDirectory=$installDir
+$link.WindowStyle=7
+$link.Save()
+
+# Register protocol used by the site to wake the background agent if needed.
+$wake=Join-Path $installDir 'wake-agent.ps1'
+$wakeBody=@"
+\$ErrorActionPreference='SilentlyContinue'
 try{
-  $r=Invoke-RestMethod -UseBasicParsing -Uri 'http://127.0.0.1:32145/health' -TimeoutSec 2
-  if($r.ok){exit 0}
+  \$r=Invoke-RestMethod -UseBasicParsing -Uri 'http://127.0.0.1:32145/health' -TimeoutSec 2
+  if(\$r.ok){exit 0}
 }catch{}
-$start=Join-Path $env:LOCALAPPDATA 'APKStudioLocal\start-local-agent.cmd'
-if(Test-Path $start){Start-Process -FilePath $start -WindowStyle Hidden}
-'@
-Set-Content -Path $launcher -Value $launcherBody -Encoding UTF8
-$proto='HKCU:\Software\Classes\apkstudiolocal'
+Start-Process -FilePath "$env:WINDIR\\System32\\wscript.exe" -ArgumentList '""$launcher""' -WindowStyle Hidden
+"@
+Set-Content -Path $wake -Value $wakeBody -Encoding UTF8
+$proto='HKCU:\\Software\\Classes\\apkstudiolocal'
 New-Item -Path $proto -Force | Out-Null
 Set-ItemProperty -Path $proto -Name '(default)' -Value 'URL:APK Studio Local Agent'
 Set-ItemProperty -Path $proto -Name 'URL Protocol' -Value ''
-New-Item -Path "$proto\shell\open\command" -Force | Out-Null
-$protoCmd='powershell.exe -NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File "'+$launcher+'"'
-Set-ItemProperty -Path "$proto\shell\open\command" -Name '(default)' -Value $protoCmd
+New-Item -Path "$proto\\shell\\open\\command" -Force | Out-Null
+$protoCmd='powershell.exe -NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File "'+$wake+'"'
+Set-ItemProperty -Path "$proto\\shell\\open\\command" -Name '(default)' -Value $protoCmd
 
-# Start now.
-try{Start-ScheduledTask -TaskName $taskName -ErrorAction Stop}catch{Start-Process -FilePath $start -WindowStyle Hidden}
+# Stop any previous watchdog/agent and start hidden now.
+Get-CimInstance Win32_Process -ErrorAction SilentlyContinue |
+  Where-Object { $_.CommandLine -like '*APKStudioLocal*run-agent.ps1*' -or $_.CommandLine -like '*APKStudioLocal*server.mjs*' } |
+  ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }
+Start-Process -FilePath "$env:WINDIR\\System32\\wscript.exe" -ArgumentList ('"'+$launcher+'"') -WindowStyle Hidden
 
 if(-not (Wait-Health)){
-  throw 'Local Agent installed but did not become healthy. See install.log and agent.log.'
+  throw 'Local Agent did not start within 60 seconds. See %LOCALAPPDATA%\\APKStudioLocal\\agent.log.'
 }
 
 Set-Content -Path (Join-Path $installDir 'installed.txt') -Value (Get-Date).ToString('o') -Encoding ASCII
