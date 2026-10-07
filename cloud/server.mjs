@@ -25,6 +25,25 @@ const publicOrigin=process.env.PUBLIC_ORIGIN||'https://apk-website-sable.vercel.
 const cloudRoot=path.dirname(fileURLToPath(import.meta.url));
 const require=createRequire(import.meta.url);
 const sevenZipPath=require('7zip-bin').path7za;
+async function resolveSevenZipExecutable(){
+  const candidates=[sevenZipPath,'7zz','7z'];
+  for(const candidate of candidates){
+    try{
+      if(candidate===sevenZipPath){
+        await fs.chmod(candidate,0o755).catch(()=>{});
+        await fs.access(candidate,fs.constants.X_OK);
+        return candidate;
+      }
+      await new Promise((resolve,reject)=>{
+        const p=spawn(candidate,['i'],{shell:false});
+        p.once('error',reject);
+        p.once('close',code=>code===0||code===1?resolve():reject(new Error(candidate+' exit '+code)));
+      });
+      return candidate;
+    }catch{}
+  }
+  throw new Error('No executable 7-Zip binary is available on this builder.');
+}
 const AGENT_VERSION='1.3.2';
 app.use(cors({origin:true}));
 app.use((req,_res,next)=>{ console.log(new Date().toISOString(), req.method, req.url); next(); });
@@ -633,7 +652,8 @@ app.post('/api/remote-build',remoteWorkspaceUpload.single('workspace'),async(req
     await fs.ensureDir(staging);
 
     await new Promise((resolve,reject)=>{
-      const p=spawn(sevenZipPath,['x','-y',uploadPath,'-o'+staging],{shell:false});
+      const sevenZipExec=await resolveSevenZipExecutable();
+      const p=spawn(sevenZipExec,['x','-y',uploadPath,'-o'+staging],{shell:false});
       let out='',err='';
       p.stdout.on('data',d=>out+=d.toString());
       p.stderr.on('data',d=>err+=d.toString());
