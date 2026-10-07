@@ -706,6 +706,13 @@ app.post('/api/remote-build',remoteWorkspaceUpload.single('workspace'),async(req
       stage:'ready',
       remoteBuild:true,
       remoteCacheHit:sameRevision,
+      buildRevision:previousMeta?.buildRevision||incomingMeta?.buildRevision||null,
+      buildSigningFingerprint:previousMeta?.buildSigningFingerprint||incomingMeta?.buildSigningFingerprint||null,
+      signingEngine:previousMeta?.signingEngine||incomingMeta?.signingEngine||null,
+      signatureSchemes:previousMeta?.signatureSchemes||incomingMeta?.signatureSchemes||null,
+      buildArtifact:previousMeta?.buildArtifact||incomingMeta?.buildArtifact||null,
+      buildSigned:previousMeta?.buildSigned??incomingMeta?.buildSigned??false,
+      buildFinishedAt:previousMeta?.buildFinishedAt||incomingMeta?.buildFinishedAt||null,
       createdAt:previousMeta?.createdAt||incomingMeta?.createdAt||new Date().toISOString(),
       updatedAt:new Date().toISOString()
     };
