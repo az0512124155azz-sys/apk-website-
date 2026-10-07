@@ -402,6 +402,7 @@ let signingPreparedProjectId='';
 let pendingProjectPlatform='';
 let selectedBuildRunIndex=0,selectedBuildRunId='',selectedBuildStepId='',stepLogRequestSeq=0,buildDetailMode=false,buildRunTab='summary',buildManagementMode='runs';
 let buildClickPromise=null,buildUiBusy=false,clientPrepareRunId='',remoteBuildProjectId='';
+const stepLogScrollState=new Map();
 
 function rootMetaForCurrent(r){
   const platform=current?.platform||'android';
@@ -817,6 +818,7 @@ async function openProject(id){
   clearInterval(pollTimer);
   signingInfo={mode:'apkstudio',configured:false,automaticReady:false};
   remoteBuildProjectId='';
+  stepLogScrollState.clear();
   signingPreparedProjectId='';
   signingPreparePromise=null;
   selectedBuildRunId='';selectedBuildStepId='';buildDetailMode=false;buildRunTab='summary';buildManagementMode='runs';
@@ -1082,6 +1084,13 @@ function renderBuildActions(){
   }
   if(selectedBuildStepId&&!steps.some(s=>s.id===selectedBuildStepId))selectedBuildStepId=steps[0]?.id||'';
 
+  document.querySelectorAll('#buildSteps .job-step-log').forEach(el=>{
+    const sid=String(el.id||'').replace(/^step-log-/,'');
+    const key=(selected?.id||'')+'::'+sid;
+    const distance=el.scrollHeight-el.scrollTop-el.clientHeight;
+    stepLogScrollState.set(key,{follow:distance<36,scrollTop:el.scrollTop});
+  });
+
   $('buildSteps').innerHTML=steps.length?steps.map(step=>{
     const open=step.id===selectedBuildStepId;
     const started=step.startedAt?new Date(step.startedAt).getTime():0;
@@ -1097,6 +1106,20 @@ function renderBuildActions(){
     '</div>';
   }).join(''):'<div class="build-run-empty">No steps yet.</div>';
 
+  document.querySelectorAll('#buildSteps .job-step-log').forEach(el=>{
+    const sid=String(el.id||'').replace(/^step-log-/,'');
+    const key=(selected?.id||'')+'::'+sid;
+    const state=stepLogScrollState.get(key)||{follow:true,scrollTop:0};
+    requestAnimationFrame(()=>{
+      if(state.follow)el.scrollTop=el.scrollHeight;
+      else el.scrollTop=state.scrollTop||0;
+    });
+    el.onscroll=()=>{
+      const distance=el.scrollHeight-el.scrollTop-el.clientHeight;
+      stepLogScrollState.set(key,{follow:distance<36,scrollTop:el.scrollTop});
+    };
+  });
+
   document.querySelectorAll('[data-build-step]').forEach(el=>el.onclick=()=>{
     const id=el.dataset.buildStep||'';
     selectedBuildStepId=selectedBuildStepId===id?'':id;
@@ -1110,7 +1133,25 @@ function renderBuildActions(){
     const step=steps.find(s=>s.id===selectedBuildStepId);
     const logEl=$('step-log-'+selectedBuildStepId);
     if(step&&logEl){
-      fetchBuildStepLog(selected,step).then(log=>{if(log!==null&&$('step-log-'+selectedBuildStepId))$('step-log-'+selectedBuildStepId).textContent=log||'No output yet.'});
+      fetchBuildStepLog(selected,step).then(log=>{
+        const el=$('step-log-'+selectedBuildStepId);
+        if(log===null||!el)return;
+        const key=(selected?.id||'')+'::'+selectedBuildStepId;
+        const existing=stepLogScrollState.get(key);
+        const distance=el.scrollHeight-el.scrollTop-el.clientHeight;
+        const follow=existing?existing.follow:distance<36;
+        const savedTop=existing?existing.scrollTop:el.scrollTop;
+        el.textContent=log||'No output yet.';
+        requestAnimationFrame(()=>{
+          if(follow){
+            el.scrollTop=el.scrollHeight;
+            stepLogScrollState.set(key,{follow:true,scrollTop:el.scrollTop});
+          }else{
+            el.scrollTop=savedTop||0;
+            stepLogScrollState.set(key,{follow:false,scrollTop:el.scrollTop});
+          }
+        });
+      });
     }
   }
 }
