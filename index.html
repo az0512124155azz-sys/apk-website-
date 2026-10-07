@@ -24,7 +24,7 @@ html,body{background:#0d1117;color:#e6edf3;margin:0}.hidden{display:none!importa
 .github-menu .danger{color:#ff7b72}
 .github-connected-dot{width:7px;height:7px;border-radius:50%;background:#3fb950;display:inline-block}
 .signing-panel{margin-top:14px;border:1px solid #30363d;border-radius:6px;overflow:hidden}.signing-row{min-height:48px;display:flex;align-items:center;gap:12px;padding:0 14px;background:#0d1117}.signing-row>span:first-child{width:190px;color:#8b949e;font-size:12px}.signing-row strong{font-size:12px;flex:1}.signing-form{border-top:1px solid #21262d;padding:14px;background:#0d1117;display:grid;grid-template-columns:1.2fr 1fr 1fr;gap:10px}.signing-form input{height:34px;border:1px solid #30363d;border-radius:6px;background:#010409;color:#e6edf3;padding:0 9px;min-width:0}.signing-actions{grid-column:1/-1;display:flex;gap:8px}.signing-note{grid-column:1/-1;color:#8b949e;font-size:11px;line-height:1.5}
-.mode-button{height:28px;border:1px solid #30363d;border-radius:6px;background:#161b22;color:#c9d1d9;padding:0 9px;font-size:11px;cursor:pointer}.mode-button:hover{background:#21262d}.mode-overlay{position:fixed;inset:0;background:#010409cc;display:grid;place-items:center;z-index:1000;padding:18px}.mode-dialog{width:min(560px,100%);background:#0d1117;border:1px solid #30363d;border-radius:10px;box-shadow:0 24px 70px #000a;padding:20px}.mode-dialog h2{margin:0 0 6px;font-size:20px}.mode-dialog>p{margin:0 0 18px;color:#8b949e;font-size:12px}.mode-options{display:grid;grid-template-columns:1fr 1fr;gap:10px}.mode-option{border:1px solid #30363d;border-radius:8px;background:#161b22;color:#e6edf3;text-align:left;padding:14px;cursor:pointer}.mode-option:hover{border-color:#58a6ff;background:#1b2430}.mode-option strong{display:block;font-size:14px;margin-bottom:5px}.mode-option span{display:block;color:#8b949e;font-size:11px;line-height:1.45}.mode-local-help{margin-top:12px;border-top:1px solid #21262d;padding-top:12px;color:#8b949e;font-size:11px}.mode-local-help a{color:#58a6ff}.mode-note{margin-top:12px;color:#6e7681;font-size:10px}
+.mode-button{height:28px;border:1px solid #30363d;border-radius:6px;background:#161b22;color:#c9d1d9;padding:0 9px;font-size:11px;cursor:pointer}.mode-button:hover{background:#21262d}.mode-overlay{position:fixed;inset:0;background:#010409cc;display:grid;place-items:center;z-index:1000;padding:18px}.mode-dialog{width:min(560px,100%);background:#0d1117;border:1px solid #30363d;border-radius:10px;box-shadow:0 24px 70px #000a;padding:20px}.mode-dialog h2{margin:0 0 6px;font-size:20px}.mode-dialog>p{margin:0 0 18px;color:#8b949e;font-size:12px}.mode-options{display:grid;grid-template-columns:1fr 1fr;gap:10px}.mode-option{border:1px solid #30363d;border-radius:8px;background:#161b22;color:#e6edf3;text-align:left;padding:14px;cursor:pointer}.mode-option:hover{border-color:#58a6ff;background:#1b2430}.mode-option strong{display:block;font-size:14px;margin-bottom:5px}.mode-option span{display:block;color:#8b949e;font-size:11px;line-height:1.45}.mode-local-help{margin-top:12px;border-top:1px solid #21262d;padding-top:12px;color:#8b949e;font-size:11px}.mode-local-help a{color:#58a6ff}.mode-note{margin-top:12px;color:#6e7681;font-size:10px}.project-platform-options{display:grid;grid-template-columns:repeat(3,1fr);gap:10px}.project-platform-option{min-height:120px;border:1px solid #30363d;border-radius:8px;background:#161b22;color:#e6edf3;text-align:left;padding:14px;cursor:pointer}.project-platform-option:hover{border-color:#58a6ff;background:#1b2430}.project-platform-option strong{display:block;font-size:14px;margin-bottom:8px}.project-platform-option span{color:#8b949e;font-size:11px;line-height:1.5}.platform-badge{display:inline-flex;align-items:center;width:max-content;padding:2px 7px;border:1px solid #30363d;border-radius:12px;color:#8b949e;font-size:9px;text-transform:uppercase;letter-spacing:.04em}.platform-badge.android{color:#3fb950}.platform-badge.windows{color:#58a6ff}.platform-badge.linux{color:#d2a8ff}@media(max-width:760px){.project-platform-options{grid-template-columns:1fr}.project-platform-option{min-height:80px}}
 .build-actions-shell{display:grid;grid-template-columns:245px minmax(0,1fr);min-height:calc(100vh - 156px);background:#0d1117}
 .build-actions-sidebar{border-right:1px solid #30363d;background:#0d1117;padding:18px 12px}
 .build-actions-title{font-size:18px;font-weight:600;margin:0 8px 12px}
@@ -99,6 +99,19 @@ html,body{background:#0d1117;color:#e6edf3;margin:0}.hidden{display:none!importa
     <div class="mode-note">You can change this later from the processor button in the top bar.</div>
   </div>
 </div>
+<div id="projectTypeOverlay" class="mode-overlay hidden">
+  <div class="mode-dialog project-type-dialog">
+    <h2>Create a project</h2>
+    <p>Choose the platform you want APK Studio to inspect and rebuild.</p>
+    <div class="project-platform-options">
+      <button class="project-platform-option" data-project-platform="android"><strong>◉ Android</strong><span>APK · Smali · resources · readable JADX source · signed APK builds</span></button>
+      <button class="project-platform-option" data-project-platform="windows"><strong>▣ Windows</strong><span>EXE · MSI · MSIX · APPX · ZIP · resources and package analysis</span></button>
+      <button class="project-platform-option" data-project-platform="linux"><strong>◆ Linux</strong><span>AppImage · DEB · RPM · ELF · TAR · ZIP · package analysis</span></button>
+    </div>
+    <div class="mode-note">APK Studio only enables rebuilding when the uploaded format can be recreated safely from the extracted workspace.</div>
+    <div style="display:flex;justify-content:flex-end;margin-top:14px"><button class="button" id="cancelProjectType">Cancel</button></div>
+  </div>
+</div>
 <main id="projectsView" class="app-shell">
   <header class="topbar">
     <button class="brand" id="brandHome"><span style="font-size:20px">⬡</span><strong>APK Studio</strong></button>
@@ -120,12 +133,11 @@ html,body{background:#0d1117;color:#e6edf3;margin:0}.hidden{display:none!importa
         <button class="danger" id="githubDisconnectProjects">Disconnect GitHub</button>
       </div>
     </div>
-    <label class="button primary mobile-upload" for="apkMobile">+ APK</label>
-    <input id="apkMobile" hidden type="file" accept=".apk,application/vnd.android.package-archive">
+    <button class="button primary mobile-upload" id="mobileNewProject">＋ Project</button>
   </header>
   <div class="projects-page">
     <div class="projects-head">
-      <div><h1>Projects</h1><p>APK workspaces</p></div>
+      <div><h1>Projects</h1><p>Android · Windows · Linux workspaces</p></div>
       <button class="button primary" id="newProject">＋ New project</button>
     </div>
     <div class="projects-toolbar">
@@ -133,13 +145,13 @@ html,body{background:#0d1117;color:#e6edf3;margin:0}.hidden{display:none!importa
       <span id="projectCount">0 projects</span>
     </div>
     <div class="upload-progress"><i id="uploadBar"></i></div>
-    <div class="upload-strip" id="dropZone">⇧ Drop an APK anywhere on this row to create a project</div>
+    <div class="upload-strip" id="dropZone">⇧ Drop an Android, Windows or Linux package here to create a project</div>
     <div class="project-list" id="projectList"></div>
     <div id="githubProjectsWrap" class="hidden" style="margin-top:22px">
       <div class="projects-toolbar" style="border-radius:6px 6px 0 0"><strong style="font-size:12px">GitHub projects</strong><span id="githubProjectCount"></span></div>
       <div class="project-list" id="githubProjectList"></div>
     </div>
-    <input id="apkInput" hidden type="file" accept=".apk,application/vnd.android.package-archive">
+    <input id="apkInput" hidden type="file" accept=".apk,.exe,.msi,.msix,.appx,.appxbundle,.msixbundle,.AppImage,.deb,.rpm,.elf,.run,.zip,.tar,.tgz,.txz,.gz,.xz">
   </div>
 </main>
 
@@ -171,7 +183,7 @@ html,body{background:#0d1117;color:#e6edf3;margin:0}.hidden{display:none!importa
     <button class="button primary" id="buildTop">⚒ Build APK</button>
   </header>
   <div class="repo-titlebar">
-    <div class="repo-title"><span>⬡</span><strong id="repoName"></strong><span class="repo-subtle">APK workspace</span></div>
+    <div class="repo-title"><span>⬡</span><strong id="repoName"></strong><span class="repo-subtle" id="repoPlatformLabel">Android workspace</span></div>
     <span class="project-status" id="repoStatus"></span>
   </div>
   <nav class="repo-nav">
@@ -264,7 +276,7 @@ html,body{background:#0d1117;color:#e6edf3;margin:0}.hidden{display:none!importa
           </section>
         </div>
 
-        <div class="signing-panel actions-signing">
+        <div class="signing-panel actions-signing" id="signingPanel">
           <div class="signing-row">
             <span>APK signing</span>
             <strong id="signingStatus">Automatic ✅</strong>
@@ -319,12 +331,25 @@ let projects=[],current=null,root='editable',dir='',selected='',saved='',pollTim
 let lastProgressDone=null,lastProgressChangedAt=0,recoveryRequested=false;
 let githubSession={connected:false,user:null},githubProjects=[];
 let signingInfo={mode:'apkstudio',configured:false,automaticReady:false};
+let pendingProjectPlatform='';
 let selectedBuildRunIndex=0,selectedBuildRunId='',selectedBuildStepId='',stepLogRequestSeq=0;
 
-const rootMeta={
- editable:{title:'Rebuildable APK',hint:'Manifest, resources and Smali'},
- readable:{title:'Readable source',hint:'JADX Java/Kotlin reconstruction'}
-};
+function rootMetaForCurrent(r){
+  const platform=current?.platform||'android';
+  if(platform==='android'){
+    return r==='editable'
+      ? {title:'Rebuildable APK',hint:'Manifest, resources and Smali'}
+      : {title:'Readable source',hint:'JADX Java/Kotlin reconstruction'};
+  }
+  if(platform==='windows'){
+    return r==='editable'
+      ? {title:'Editable Windows package',hint:'Extracted files and resources'}
+      : {title:'Readable analysis',hint:'Package metadata, archive listing and strings'};
+  }
+  return r==='editable'
+    ? {title:'Editable Linux package',hint:'Extracted files and resources'}
+    : {title:'Readable analysis',hint:'Package metadata, archive listing and strings'};
+}
 const esc=s=>String(s??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 const bytes=n=>n<1024?n+' B':n<1048576?(n/1024).toFixed(1)+' KB':(n/1048576).toFixed(1)+' MB';
 
@@ -666,8 +691,8 @@ function renderProjects(){
   $('projectList').innerHTML=list.length?list.map(p=>`
     <div class="project-row">
       <button class="project-main" data-open="${p.id}">
-        <div class="project-icon">⬡</div>
-        <div class="project-text"><strong>${esc((p.originalName||p.id).replace(/\.apk$/i,''))}</strong><span>${esc(p.originalName||'')} · ${bytes(p.size||0)} · ${p._source==='local'?'This computer':'Cloud'}</span></div>
+        <div class="project-icon">${p.platform==='windows'?'▣':p.platform==='linux'?'◆':'◉'}</div>
+        <div class="project-text"><strong>${esc((p.originalName||p.id).replace(/\.apk$/i,''))}</strong><span>${esc(p.originalName||'')} · ${bytes(p.size||0)} · ${p._source==='local'?'This computer':'Cloud'}</span><span class="platform-badge ${esc(p.platform||'android')}">${esc(p.platform||'android')}</span></div>
       </button>
       <span class="project-status ${esc(p.status)}">● ${esc(p.status)}</span>
       <span class="updated">${esc(p.stage||'')}</span>
@@ -676,9 +701,11 @@ function renderProjects(){
   document.querySelectorAll('[data-open]').forEach(el=>el.onclick=()=>openProject(el.dataset.open));
   document.querySelectorAll('[data-delete]').forEach(el=>el.onclick=()=>deleteProject(el.dataset.delete));
 }
-function upload(file){
-  if(!file)return;if(!file.name.toLowerCase().endsWith('.apk'))return alert('Choose an APK file');
-  const fd=new FormData();fd.append('apk',file);
+function upload(file,platformHint=''){
+  if(!file)return;
+  const ok=/\.(apk|exe|msi|msix|appx|appxbundle|msixbundle|appimage|deb|rpm|elf|run|zip|tar|tgz|txz|tar\.gz|tar\.xz)$/i.test(file.name);
+  if(!ok)return alert('Choose a supported Android, Windows or Linux package');
+  const fd=new FormData();fd.append('apk',file);if(platformHint)fd.append('platform',platformHint);
   $('uploadBar').style.width='0%';$('cloudState').textContent='uploading 0%';$('cloudState').className='cloud-state';
   const xhr=new XMLHttpRequest();xhr.open('POST',API+'/api/projects/upload');xhr.timeout=120000;
   xhr.upload.onprogress=e=>{if(e.lengthComputable){const p=Math.round(e.loaded/e.total*100);$('uploadBar').style.width=p+'%';$('cloudState').textContent='uploading '+p+'%'}};
@@ -698,6 +725,13 @@ async function openProject(id){
   current=await api('/api/projects/'+id,{timeout:45000});openedAt=Date.now();lastProgressDone=null;lastProgressChangedAt=Date.now();recoveryRequested=false;
   $('projectsView').classList.add('hidden');$('workspaceView').classList.remove('hidden');
   const name=(current.originalName||id).replace(/\.apk$/i,'');$('repoName').textContent=name;$('topRepoName').textContent=name;
+  const platform=current.platform||'android';
+  $('repoPlatformLabel').textContent=(platform==='android'?'Android':platform==='windows'?'Windows':'Linux')+' workspace';
+  $('buildTop').textContent=platform==='android'?'⚒ Build APK':platform==='windows'?'⚒ Build Windows':'⚒ Build Linux';
+  $('buildPage').textContent=$('buildTop').textContent;
+  $('buildWorkflow').innerHTML='<span>⚒</span>'+(platform==='android'?'Build APK':platform==='windows'?'Build Windows':'Build Linux');
+  $('buildSigningNav').classList.toggle('hidden',platform!=='android');
+  $('signingPanel').classList.toggle('hidden',platform!=='android');
   $('zipLink').href=(activeProjectBase||API)+'/api/projects/'+id+'/download';
   renderProject();dir='';selected='';setRoot('editable');loadDir();
   await loadSigningStatus();
@@ -890,9 +924,14 @@ function buildStatusIcon(status){
 function renderProject(){
   $('repoStatus').textContent='● '+current.status;$('repoStatus').className='project-status '+current.status;
   const ready=current.status==='ready';
-  const signingReady=!!(signingInfo.configured||signingInfo.automaticReady);
-  $('buildTop').disabled=!ready||!signingReady||current.buildStatus==='building';
-  $('buildPage').disabled=!ready||!signingReady||current.buildStatus==='building';
+  const platform=current.platform||'android';
+  const signingReady=platform!=='android'||!!(signingInfo.configured||signingInfo.automaticReady);
+  const buildSupported=current.buildSupported!==false;
+  $('buildTop').disabled=!ready||!signingReady||!buildSupported||current.buildStatus==='building';
+  $('buildPage').disabled=!ready||!signingReady||!buildSupported||current.buildStatus==='building';
+  const buildUnavailableReason=current.buildUnsupportedReason||'This compiled format is analysis-only.';
+  $('buildTop').title=buildSupported?'':buildUnavailableReason;
+  $('buildPage').title=$('buildTop').title;
   const b=$('statusBanner');b.className='status-banner';b.classList.remove('hidden');
   if(current.status==='error'){b.classList.add('error');$('statusTitle').textContent='Decompile failed';$('statusText').textContent=current.error||'Unknown error'}
   else if(!ready){const pr=progressFromLog(current.log||'');const sec=Math.floor((Date.now()-openedAt)/1000);$('statusTitle').textContent=current.stage==='jadx'?'Decompiling':'Preparing project';$('statusText').innerHTML='<span class="stage-detail">'+esc(current.stage||current.status)+(pr?' · '+pr.pct+'% ('+pr.done+'/'+pr.total+')':'')+' · '+sec+'s</span>'}
@@ -900,12 +939,12 @@ function renderProject(){
   else b.classList.add('hidden');
 
   $('detailsTable').innerHTML=[
-    ['File',current.originalName],['Status',current.status],['Stage',current.stage||'—'],['Size',bytes(current.size||0)],
-    ['JADX exit code',current.jadxExitCode??'—'],['Decoded files',current.editableFileCount??'—']
+    ['File',current.originalName],['Platform',current.platform||'android'],['Format',current.format||'apk'],['Status',current.status],['Stage',current.stage||'—'],['Size',bytes(current.size||0)],
+    ['Readable mode',current.readableMode||'—'],['Editable files',current.editableFileCount??'—'],['Build support',current.buildSupported===false?'Analysis only':'Available']
   ].map(x=>'<div><span>'+esc(x[0])+'</span><strong>'+esc(x[1])+'</strong></div>').join('');
   renderBuildActions();
 }
-function setRoot(r){root=r;dir='';selected='';$('rootTitle').textContent=rootMeta[r].title;$('rootHint').textContent=rootMeta[r].hint;$('rootCrumb').textContent=rootMeta[r].title;$('statusRoot').textContent=rootMeta[r].title;document.querySelectorAll('#rootMenu button').forEach(b=>b.classList.toggle('selected',b.dataset.root===r));$('rootMenu').classList.add('hidden');$('editor').classList.add('hidden');$('editorEmpty').classList.remove('hidden');$('saveFile').disabled=true;loadDir()}
+function setRoot(r){root=r;dir='';selected='';const meta=rootMetaForCurrent(r);$('rootTitle').textContent=meta.title;$('rootHint').textContent=meta.hint;$('rootCrumb').textContent=meta.title;$('statusRoot').textContent=meta.title;document.querySelectorAll('#rootMenu button').forEach(b=>{b.classList.toggle('selected',b.dataset.root===r);const m=rootMetaForCurrent(b.dataset.root);b.querySelector('strong').textContent=m.title;b.querySelector('span').textContent=m.hint});$('rootMenu').classList.add('hidden');$('editor').classList.add('hidden');$('editorEmpty').classList.remove('hidden');$('saveFile').disabled=true;loadDir()}
 async function loadDir(){
   if(!current)return;$('treeArea').innerHTML='<div class="tree-loading">Loading…</div>';
   try{const q=new URLSearchParams({root,path:dir});const d=await api('/api/projects/'+current.id+'/tree?'+q,{timeout:30000});const items=(d.items||[]).sort((a,b)=>a.type===b.type?a.name.localeCompare(b.name):a.type==='dir'?-1:1);
@@ -923,10 +962,15 @@ async function openFile(path){
 async function saveFile(){if(!selected||root!=='editable')return;const q=new URLSearchParams({root,path:selected});try{await api('/api/projects/'+current.id+'/file?'+q,{method:'PUT',headers:{'content-type':'application/json'},body:JSON.stringify({content:$('editor').value}),timeout:30000});saved=$('editor').value;$('dirtyState').textContent='';$('saveFile').disabled=true}catch(e){alert(e.message)}}
 async function build(){
   if(!current)return;
-  const signingReady=!!(signingInfo.configured||signingInfo.automaticReady);
+  const signingReady=(current.platform||'android')!=='android'||!!(signingInfo.configured||signingInfo.automaticReady);
   if(!signingReady){
     switchSection('build');
     alert('APK Studio is still preparing the signing key. Build will unlock automatically when the key is ready.');
+    return;
+  }
+  if(current.buildSupported===false){
+    switchSection('build');
+    alert(current.buildUnsupportedReason||'This package can be inspected but cannot be rebuilt safely from the compiled artifact.');
     return;
   }
   try{
@@ -943,6 +987,15 @@ async function build(){
 }
 async function loadSigningStatus(){
   if(!current)return;
+  if((current.platform||'android')!=='android'){
+    signingInfo={mode:'none',configured:false,automaticReady:true};
+    $('signingPanel').classList.add('hidden');
+    $('buildSigningNav').classList.add('hidden');
+    renderProject();
+    return;
+  }
+  $('signingPanel').classList.remove('hidden');
+  $('buildSigningNav').classList.remove('hidden');
   try{
     signingInfo=await api('/api/projects/'+current.id+'/signing',{timeout:15000});
 
@@ -1068,8 +1121,24 @@ $('githubRefreshWorkspace').onclick=async()=>{closeGithubMenus();await loadGithu
 document.addEventListener('click',e=>{if(!e.target.closest('.github-account'))closeGithubMenus()});
 $('githubPush').onclick=()=>pushGithub();
 $('vscodeOpen').onclick=()=>openVsCode();
-$('newProject').onclick=()=>$('apkInput').click();$('apkInput').onchange=e=>upload(e.target.files[0]);$('apkMobile').onchange=e=>upload(e.target.files[0]);
-$('dropZone').ondragover=e=>{e.preventDefault();$('dropZone').classList.add('drag')};$('dropZone').ondragleave=()=>$('dropZone').classList.remove('drag');$('dropZone').ondrop=e=>{e.preventDefault();$('dropZone').classList.remove('drag');upload(e.dataTransfer.files[0])};
+function showProjectTypeChooser(){$('projectTypeOverlay').classList.remove('hidden')}
+function hideProjectTypeChooser(){$('projectTypeOverlay').classList.add('hidden')}
+$('newProject').onclick=showProjectTypeChooser;
+$('mobileNewProject').onclick=showProjectTypeChooser;
+$('cancelProjectType').onclick=hideProjectTypeChooser;
+document.querySelectorAll('[data-project-platform]').forEach(b=>b.onclick=()=>{
+  pendingProjectPlatform=b.dataset.projectPlatform||'';
+  const accept=pendingProjectPlatform==='android'
+    ? '.apk'
+    : pendingProjectPlatform==='windows'
+      ? '.exe,.msi,.msix,.appx,.appxbundle,.msixbundle,.zip'
+      : '.AppImage,.deb,.rpm,.elf,.run,.zip,.tar,.tar.gz,.tgz,.tar.xz,.txz';
+  $('apkInput').accept=accept;
+  hideProjectTypeChooser();
+  $('apkInput').click();
+});
+$('apkInput').onchange=e=>{const file=e.target.files[0];upload(file,pendingProjectPlatform);e.target.value='';pendingProjectPlatform=''};
+$('dropZone').ondragover=e=>{e.preventDefault();$('dropZone').classList.add('drag')};$('dropZone').ondragleave=()=>$('dropZone').classList.remove('drag');$('dropZone').ondrop=e=>{e.preventDefault();$('dropZone').classList.remove('drag');upload(e.dataTransfer.files[0],'')};
 $('projectSearch').oninput=renderProjects;$('backProjects').onclick=goHome;$('backProjects2').onclick=goHome;$('brandHome').onclick=loadProjects;
 $('rootPicker').onclick=()=>$('rootMenu').classList.toggle('hidden');document.querySelectorAll('#rootMenu button').forEach(b=>b.onclick=()=>setRoot(b.dataset.root));
 $('refreshTree').onclick=loadDir;$('saveFile').onclick=saveFile;$('editor').oninput=()=>{const dirty=$('editor').value!==saved;$('dirtyState').textContent=dirty?'● Unsaved':'';$('saveFile').disabled=!dirty||root!=='editable'};
