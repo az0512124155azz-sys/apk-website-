@@ -946,13 +946,16 @@ function setRunTab(tab){
 function renderSigningManagement(){
   if((current?.platform||'android')!=='android')return;
   const ready=!!(signingInfo.configured||signingInfo.automaticReady);
+  const error=String(signingInfo.error||'');
   const badge=$('signingConnectedBadge');
-  badge.textContent=ready?'Connected':'Not connected';
-  badge.className='signing-connected-badge '+(ready?'connected':'waiting');
+  badge.textContent=ready?'Connected':error?'Not connected':'Preparing';
+  badge.className='signing-connected-badge '+(ready?'connected':error?'error':'waiting');
   $('signingKeyTitle').textContent=signingInfo.configured?'Original signing key':'APK Studio automatic key';
   $('signingKeyMeta').textContent=ready
     ? (signingInfo.configured?'Original keystore is connected to this project.':'Project key is created, stored and ready for every build.')
-    : 'APK Studio is preparing a project signing key. Build remains locked until it is ready.';
+    : error
+      ? error
+      : 'APK Studio is preparing a project signing key. Build remains locked until it is ready.';
 }
 function renderBuildActions(){
   if(!current)return;
@@ -1197,11 +1200,12 @@ async function loadSigningStatus(){
       }
 
       if(prepareError){
-        signingInfo={mode:'apkstudio',configured:false,automaticReady:false};
-        const msg=String(prepareError.message||prepareError||'Unknown signing error');
-        $('signingStatus').textContent='Signing key failed: '+msg.slice(0,220);
+        const msg=String(prepareError.message||prepareError||'Unknown signing error').slice(0,220);
+        signingInfo={mode:'apkstudio',configured:false,automaticReady:false,error:msg};
+        $('signingStatus').textContent='Signing key failed: '+msg;
         $('buildTop').disabled=true;
         $('buildPage').disabled=true;
+        renderSigningManagement();
         return;
       }
     }
@@ -1214,8 +1218,9 @@ async function loadSigningStatus(){
     renderSigningManagement();
     renderProject();
   }catch(e){
-    signingInfo={mode:'apkstudio',configured:false,automaticReady:false};
-    $('signingStatus').textContent='Signing key unavailable: '+String(e.message||e).slice(0,180);
+    const msg=String(e.message||e).slice(0,180);
+    signingInfo={mode:'apkstudio',configured:false,automaticReady:false,error:msg};
+    $('signingStatus').textContent='Signing key unavailable: '+msg;
     $('buildTop').disabled=true;
     $('buildPage').disabled=true;
     renderSigningManagement();
