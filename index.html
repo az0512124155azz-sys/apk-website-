@@ -1052,7 +1052,9 @@ function renderBuildActions(){
   $('runJobPageStatus').className='build-detail-status '+selectedStatus;
   $('runStartedAt').textContent=selected?.startedAt?new Date(selected.startedAt).toLocaleString():'—';
   $('runDuration').textContent=selected?runDuration(selected):'—';
-  $('runProcessor').textContent=(current.remoteBuildProjectId||remoteBuildProjectId)?'Cloud build engine':(activeProjectBase===LOCAL_API?'This computer':'Cloud');
+  $('runProcessor').textContent=(current.remoteBuildProjectId||remoteBuildProjectId)
+    ? ((current.remoteCacheHit||false)?'Cloud build engine · cache':'Cloud build engine')
+    : (activeProjectBase===LOCAL_API?'This computer':'Cloud');
   $('runGraphMeta').textContent=selected?(selected.currentStep||selected.status||'queued'):'Queued';
 
   const dotClass=selected?.status==='completed'?'completed':selected?.status==='failed'?'failed':selected?.status==='in_progress'?'in_progress':'queued';
@@ -1341,7 +1343,9 @@ async function startRemoteModernBuildFromLocal(){
   if(!remote?.id)throw new Error('The modern builder did not return a remote build project.');
 
   remoteBuildProjectId=remote.id;
-  setClientPrepareRun('completed','Workspace uploaded. Modern Android build started.');
+  setClientPrepareRun('completed',remote.cache
+    ? 'Workspace uploaded. Build cache found — unchanged compile output will be reused.'
+    : 'Workspace uploaded. Modern Android build started.');
 
   removeClientPrepareRun();
   current.buildStatus='building';
