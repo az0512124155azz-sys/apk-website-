@@ -68,6 +68,12 @@ if(-not (Test-Path (Join-Path $jadxDir 'lib\jadx-1.5.6-all.jar'))){
   Remove-Item -Force $tmp -ErrorAction SilentlyContinue
 }
 
+$uberSigner=Join-Path $tools 'uber-apk-signer-1.3.0.jar'
+if(-not (Test-Path $uberSigner)){
+  Write-Host 'Installing modern Android APK signer...'
+  Download 'https://github.com/patrickfav/uber-apk-signer/releases/download/v1.3.0/uber-apk-signer-1.3.0.jar' $uberSigner
+}
+
 $apktoolDir=Join-Path $tools 'apktool'
 New-Item -ItemType Directory -Force -Path $apktoolDir | Out-Null
 $apktool=Join-Path $apktoolDir 'apktool.jar'
