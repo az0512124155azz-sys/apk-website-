@@ -8,7 +8,7 @@ import crypto from 'node:crypto';
 import archiver from 'archiver';
 import { spawn } from 'node:child_process';
 import {ROOT,init,projectDir,safeJoin,readMeta,writeMeta,listDir} from './lib.mjs';
-import {decompile,rebuild} from './tasks.mjs';
+import {decompile,rebuild,ensureAutomaticSigningKey} from './tasks.mjs';
 
 await init();
 const app=express();
@@ -429,6 +429,19 @@ app.get('/api/projects/:id/signing',async(req,res,next)=>{
   }catch(e){next(e);}
 });
 
+app.post('/api/projects/:id/signing/prepare',async(req,res,next)=>{
+  try{
+    await ensureProjectAvailable(req,req.params.id);
+    const dir=projectDir(req.params.id);
+    const cfg=await fs.readJson(path.join(dir,'signing-config.json')).catch(()=>null);
+    if(cfg && await fs.pathExists(path.join(dir,'user-signing.keystore'))){
+      return res.json({ok:true,mode:'custom',configured:true,automaticReady:false});
+    }
+    await ensureAutomaticSigningKey(req.params.id);
+    res.json({ok:true,mode:'apkstudio',configured:false,automaticReady:true});
+  }catch(e){next(e);}
+});
+
 app.post('/api/projects/:id/signing',signingUpload.single('keystore'),async(req,res,next)=>{
   try{
     await ensureProjectAvailable(req,req.params.id);
@@ -488,6 +501,13 @@ app.post('/api/projects/:id/build',async(req,res,next)=>{
   try{
     const meta=await ensureProjectAvailable(req,req.params.id);
     if(meta.buildStatus==='building')return res.status(202).json({ok:true,alreadyBuilding:true,stage:meta.buildStage||'building'});
+    const dir=projectDir(req.params.id);
+    const cfg=await fs.readJson(path.join(dir,'signing-config.json')).catch(()=>null);
+    const customReady=!!cfg && await fs.pathExists(path.join(dir,'user-signing.keystore'));
+    const automaticReady=await fs.pathExists(path.join(dir,'apkstudio-signing.jks'));
+    if(!customReady && !automaticReady){
+      return res.status(409).json({error:'Signing key is not ready yet. Wait for APK Studio to prepare the signing key before building.'});
+    }
     await writeMeta(req.params.id,{buildStatus:'building',buildStage:'queued',buildStartedAt:new Date().toISOString(),buildError:null});
     void rebuild(req.params.id);
     res.status(202).json({ok:true,stage:'queued'});
