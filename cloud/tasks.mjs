@@ -63,11 +63,27 @@ export async function ensureAutomaticSigningKey(id){
   const dir=projectDir(id);
   const signing=await signingConfigFor(dir);
   if(signing.type!=='apkstudio')return signing;
-  if(await fs.pathExists(signing.keystore))return signing;
-  if(!await fs.pathExists(keytoolBin))throw new Error('keytool is missing; update the APK Studio Local Agent.');
+
+  const keytool=await fs.pathExists(keytoolBin) ? keytoolBin : (isWindows?'keytool.exe':'keytool');
+
+  if(await fs.pathExists(signing.keystore)){
+    try{
+      await run(id,keytool,[
+        '-list','-keystore',signing.keystore,
+        '-storepass',signing.storePass,
+        '-alias',signing.alias
+      ],[0],{timeoutMs:60000});
+      return signing;
+    }catch{
+      await log(id,'Existing automatic signing key is invalid. Recreating it.');
+      await fs.remove(signing.keystore).catch(()=>{});
+    }
+  }
+
   await log(id,'Preparing automatic APK signing key...');
-  await run(id,keytoolBin,[
+  await run(id,keytool,[
     '-genkeypair',
+    '-storetype','JKS',
     '-keystore',signing.keystore,
     '-storepass',signing.storePass,
     '-keypass',signing.keyPass,
@@ -78,7 +94,14 @@ export async function ensureAutomaticSigningKey(id){
     '-dname','CN=APK Studio Automatic Signing,O=APK Studio,C=US',
     '-noprompt'
   ],[0],{timeoutMs:120000});
-  await writeMeta(id,{signingType:'Automatic APK Studio key',signingReady:true});
+
+  await run(id,keytool,[
+    '-list','-keystore',signing.keystore,
+    '-storepass',signing.storePass,
+    '-alias',signing.alias
+  ],[0],{timeoutMs:60000});
+
+  await writeMeta(id,{signingType:'Automatic APK Studio key',signingReady:true,signingError:null});
   await log(id,'Automatic APK signing key is ready.');
   return signing;
 }
