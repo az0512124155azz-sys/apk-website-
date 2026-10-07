@@ -9,6 +9,7 @@ import archiver from 'archiver';
 import { spawn } from 'node:child_process';
 import {ROOT,init,projectDir,safeJoin,readMeta,writeMeta,listDir} from './lib.mjs';
 import {decompile,rebuild,ensureAutomaticSigningKey} from './tasks.mjs';
+import {createBuildRun,listBuildRuns,readStepLog} from './workflows.mjs';
 
 await init();
 const app=express();
@@ -355,7 +356,8 @@ app.get('/api/projects/:id',async(req,res,next)=>{
   try{
     const m=await ensureProjectAvailable(req,req.params.id);
     const log=await fs.readFile(path.join(projectDir(req.params.id),'build.log'),'utf8').catch(()=> '');
-    res.json({...m,log});
+    const buildRuns=await listBuildRuns(req.params.id);
+    res.json({...m,log,buildRuns});
   }catch(e){next(e);}
 });
 
@@ -500,20 +502,37 @@ app.post('/api/projects/:id/recover',async(req,res,next)=>{
   }catch(e){next(e);}
 });
 
+app.get('/api/projects/:id/build-runs/:runId/steps/:stepId/log',async(req,res,next)=>{
+  try{
+    await ensureProjectAvailable(req,req.params.id);
+    const runs=await listBuildRuns(req.params.id);
+    const run=runs.find(r=>r.id===req.params.runId);
+    if(!run)return res.status(404).json({error:'Build run not found'});
+    const step=run.steps?.find(s=>s.id===req.params.stepId);
+    if(!step)return res.status(404).json({error:'Build step not found'});
+    const log=await readStepLog(req.params.id,req.params.runId,req.params.stepId);
+    res.json({runId:run.id,stepId:step.id,status:step.status,log});
+  }catch(e){next(e);}
+});
+
 app.post('/api/projects/:id/build',async(req,res,next)=>{
   try{
     const meta=await ensureProjectAvailable(req,req.params.id);
     if(meta.buildStatus==='building')return res.status(202).json({ok:true,alreadyBuilding:true,stage:meta.buildStage||'building'});
-    const dir=projectDir(req.params.id);
-    const cfg=await fs.readJson(path.join(dir,'signing-config.json')).catch(()=>null);
-    const customReady=!!cfg && await fs.pathExists(path.join(dir,'user-signing.keystore'));
-    const automaticReady=await fs.pathExists(path.join(dir,'apkstudio-signing.jks'));
-    if(!customReady && !automaticReady){
-      return res.status(409).json({error:'Signing key is not ready yet. Wait for APK Studio to prepare the signing key before building.'});
+    const platform=meta.platform||'android';
+    if(platform==='android'){
+      const dir=projectDir(req.params.id);
+      const cfg=await fs.readJson(path.join(dir,'signing-config.json')).catch(()=>null);
+      const customReady=!!cfg && await fs.pathExists(path.join(dir,'user-signing.keystore'));
+      const automaticReady=await fs.pathExists(path.join(dir,'apkstudio-signing.jks'));
+      if(!customReady && !automaticReady){
+        return res.status(409).json({error:'Signing key is not ready yet. Wait for APK Studio to prepare the signing key before building.'});
+      }
     }
-    await writeMeta(req.params.id,{buildStatus:'building',buildStage:'queued',buildStartedAt:new Date().toISOString(),buildError:null});
-    void rebuild(req.params.id);
-    res.status(202).json({ok:true,stage:'queued'});
+    const run=await createBuildRun(req.params.id,{platform,title:'Build '+(platform==='android'?'APK':platform)});
+    await writeMeta(req.params.id,{buildStatus:'building',buildStage:'queued',buildStartedAt:new Date().toISOString(),buildError:null,activeBuildRunId:run.id});
+    void rebuild(req.params.id,{runId:run.id});
+    res.status(202).json({ok:true,stage:'queued',run});
   }catch(e){next(e);}
 });
 
