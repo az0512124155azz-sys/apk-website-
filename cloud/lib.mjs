@@ -22,7 +22,7 @@ export async function run(id,cmd,args,accepted=[0],options={}){
   await log(id,commandLine);
   if(options.logFile){await fs.ensureDir(path.dirname(options.logFile));await fs.appendFile(options.logFile,commandLine+'\n')}
   return new Promise((resolve,reject)=>{
-    const p=spawn(cmd,args,{shell:false});
+    const p=spawn(cmd,args,{shell:false,cwd:options.cwd||undefined});
     let out='',err='',settled=false,idleTimer=null,totalTimer=null;
     const finish=(fn,value)=>{if(settled)return;settled=true;if(idleTimer)clearTimeout(idleTimer);if(totalTimer)clearTimeout(totalTimer);fn(value)};
     const armIdle=()=>{
