@@ -400,6 +400,7 @@ let signingPreparePromise=null;
 let signingPreparedProjectId='';
 let pendingProjectPlatform='';
 let selectedBuildRunIndex=0,selectedBuildRunId='',selectedBuildStepId='',stepLogRequestSeq=0,buildDetailMode=false,buildRunTab='summary',buildManagementMode='runs';
+let buildClickPromise=null,buildUiBusy=false,clientPrepareRunId='';
 
 function rootMetaForCurrent(r){
   const platform=current?.platform||'android';
@@ -1088,8 +1089,8 @@ function renderProject(){
   const platform=current.platform||'android';
   const signingReady=platform!=='android'||isSigningConnected(signingInfo);
   const buildSupported=current.buildSupported!==false;
-  $('buildTop').disabled=!ready||!signingReady||!buildSupported||current.buildStatus==='building';
-  $('buildPage').disabled=!ready||!signingReady||!buildSupported||current.buildStatus==='building';
+  $('buildTop').disabled=!ready||!signingReady||!buildSupported||current.buildStatus==='building'||buildUiBusy;
+  $('buildPage').disabled=!ready||!signingReady||!buildSupported||current.buildStatus==='building'||buildUiBusy;
   const buildUnavailableReason=current.buildUnsupportedReason||'This compiled format is analysis-only.';
   $('buildTop').title=buildSupported?'':buildUnavailableReason;
   $('buildPage').title=$('buildTop').title;
@@ -1121,6 +1122,45 @@ async function openFile(path){
   }catch(e){alert(e.message)}
 }
 async function saveFile(){if(!selected||root!=='editable')return;const q=new URLSearchParams({root,path:selected});try{await api('/api/projects/'+current.id+'/file?'+q,{method:'PUT',headers:{'content-type':'application/json'},body:JSON.stringify({content:$('editor').value}),timeout:30000});saved=$('editor').value;$('dirtyState').textContent='';$('saveFile').disabled=true}catch(e){alert(e.message)}}
+function setClientPrepareRun(status,message){
+  if(!current)return;
+  if(!clientPrepareRunId)clientPrepareRunId='client-prepare-'+Date.now();
+  const stepStatus=status==='failed'?'failed':status==='completed'?'completed':'in_progress';
+  const runStatus=status==='failed'?'failed':status==='completed'?'completed':'in_progress';
+  const existing=(current.buildRuns||[]).find(r=>r.id===clientPrepareRunId);
+  const run=existing||{
+    id:clientPrepareRunId,
+    number:'…',
+    platform:'android',
+    title:'Prepare Android build engine',
+    status:'in_progress',
+    createdAt:new Date().toISOString(),
+    startedAt:new Date().toISOString(),
+    finishedAt:null,
+    currentStep:'prepare-engine',
+    steps:[{id:'prepare-engine',name:'Prepare Android build engine',status:'in_progress',isLegacy:true,legacyLog:''}]
+  };
+  run.status=runStatus;
+  run.currentStep=status==='completed'?null:'prepare-engine';
+  if(status==='completed'||status==='failed')run.finishedAt=new Date().toISOString();
+  const step=run.steps[0];
+  step.status=stepStatus;
+  step.legacyLog=(step.legacyLog?step.legacyLog+'\n':'')+'['+new Date().toLocaleTimeString()+'] '+message;
+  if(status==='failed')run.error=message;
+  current.buildRuns=[run,...((current.buildRuns||[]).filter(r=>r.id!==clientPrepareRunId))];
+  selectedBuildRunId=clientPrepareRunId;
+  selectedBuildStepId='prepare-engine';
+  buildDetailMode=true;
+  buildRunTab='job';
+  buildManagementMode='runs';
+  renderProject();
+}
+function removeClientPrepareRun(){
+  if(!current||!clientPrepareRunId)return;
+  current.buildRuns=(current.buildRuns||[]).filter(r=>r.id!==clientPrepareRunId);
+  clientPrepareRunId='';
+}
+
 async function ensureModernLocalBuildAgent(){
   if(activeProjectBase!==LOCAL_API)return true;
 
@@ -1136,47 +1176,65 @@ async function ensureModernLocalBuildAgent(){
   };
 
   let health=await readHealth();
-  if(!health)return false;
+  if(!health){
+    setClientPrepareRun('failed','Local processor is offline.');
+    return false;
+  }
+
   localAgentVersion=health.version||'0';
-  if(!versionLt(localAgentVersion,'1.3.2'))return true;
+  if(!versionLt(localAgentVersion,'1.3.2')){
+    setClientPrepareRun('completed','Android build engine '+localAgentVersion+' is ready.');
+    return true;
+  }
 
   if(localUpdatePromise)return localUpdatePromise;
   localUpdatePromise=(async()=>{
     try{
       $('cloudState').textContent='● updating Android build engine…';
       $('cloudState').className='cloud-state';
-      $('buildTop').disabled=true;
-      $('buildPage').disabled=true;
+      setClientPrepareRun('in_progress','Updating Local Agent '+localAgentVersion+' → 1.3.2. The processor may disconnect briefly.');
 
-      for(let attempt=0;attempt<2;attempt++){
+      let started=false;
+      try{
+        const controller=new AbortController();
+        const timer=setTimeout(()=>controller.abort(),8000);
         try{
-          const controller=new AbortController();
-          const timer=setTimeout(()=>controller.abort(),8000);
-          try{
-            await fetch(LOCAL_API+'/api/local/update',{method:'POST',cache:'no-store',signal:controller.signal});
-          }finally{clearTimeout(timer)}
-        }catch{}
+          const r=await fetch(LOCAL_API+'/api/local/update',{method:'POST',cache:'no-store',signal:controller.signal});
+          started=r.ok||r.status===202;
+        }finally{clearTimeout(timer)}
+      }catch{}
 
-        for(let i=0;i<160;i++){
-          await new Promise(r=>setTimeout(r,750));
-          health=await readHealth(1000);
-          if(health){
-            localAgentVersion=health.version||'0';
-            if(!versionLt(localAgentVersion,'1.3.2')){
-              $('cloudState').textContent='● local processor online';
-              $('cloudState').className='cloud-state ok';
-              return true;
-            }
+      if(!started){
+        setClientPrepareRun('failed','Local Agent did not accept the automatic update request.');
+        return false;
+      }
+
+      let sawRestart=false;
+      for(let i=0;i<90;i++){
+        await new Promise(r=>setTimeout(r,750));
+        health=await readHealth(1000);
+        if(!health){
+          if(!sawRestart){
+            sawRestart=true;
+            setClientPrepareRun('in_progress','Local Agent is restarting with the new build engine…');
           }
+          continue;
+        }
+        localAgentVersion=health.version||'0';
+        if(!versionLt(localAgentVersion,'1.3.2')){
+          $('cloudState').textContent='● local processor online';
+          $('cloudState').className='cloud-state ok';
+          setClientPrepareRun('completed','Local Agent '+localAgentVersion+' is online. zipalign + modern APK signing are ready.');
+          return true;
         }
       }
 
       $('cloudState').textContent='● local build engine update failed';
       $('cloudState').className='cloud-state bad';
+      setClientPrepareRun('failed','Local Agent stayed on version '+localAgentVersion+'. The APK build was not started with the old signer.');
       return false;
     }finally{
       localUpdatePromise=null;
-      if(current)renderProject();
     }
   })();
 
@@ -1185,44 +1243,91 @@ async function ensureModernLocalBuildAgent(){
 
 async function build(){
   if(!current)return;
-  if((current.platform||'android')==='android' && activeProjectBase===LOCAL_API){
-    const modern=await ensureModernLocalBuildAgent();
-    if(!modern){
-      alert('APK Studio could not update the local Android build engine to the version that uses zipalign + apksigner. The old build is intentionally blocked because it can produce APKs that Android refuses to install.');
-      return;
+  if(buildClickPromise)return buildClickPromise;
+
+  buildClickPromise=(async()=>{
+    buildUiBusy=true;
+    clientPrepareRunId='';
+    const platform=current.platform||'android';
+    const normalLabel=platform==='android'?'⚒ Build APK':platform==='windows'?'⚒ Build Windows':'⚒ Build Linux';
+
+    try{
+      buildManagementMode='runs';
+      buildDetailMode=true;
+      buildRunTab='job';
+      switchSection('build');
+      $('buildTop').textContent='Preparing…';
+      $('buildPage').textContent='Preparing…';
+
+      if(platform==='android'&&activeProjectBase===LOCAL_API){
+        setClientPrepareRun('in_progress','Checking the local Android build engine…');
+        const modern=await ensureModernLocalBuildAgent();
+        if(!modern)return;
+      }
+
+      if(platform==='android'&&!isSigningConnected(signingInfo)){
+        setClientPrepareRun('in_progress','Checking the APK signing key…');
+        const ready=await ensureProjectSigningReady({force:true});
+        if(!ready){
+          setClientPrepareRun('failed','APK Studio could not create or connect the signing key. Open Signing to see the exact error.');
+          return;
+        }
+        setClientPrepareRun('completed','Signing key is connected and ready.');
+      }
+
+      if(platform==='android'&&!isSigningConnected(signingInfo)){
+        setClientPrepareRun('failed','Signing key is not connected.');
+        return;
+      }
+
+      if(current.buildSupported===false){
+        setClientPrepareRun('failed',current.buildUnsupportedReason||'This package can be inspected but cannot be rebuilt safely from the compiled artifact.');
+        return;
+      }
+
+      $('buildTop').textContent='Starting…';
+      $('buildPage').textContent='Starting…';
+
+      const d=await api('/api/projects/'+current.id+'/build',{method:'POST',timeout:30000});
+
+      if(d.alreadyBuilding){
+        removeClientPrepareRun();
+        current=await api('/api/projects/'+current.id,{timeout:15000});
+        buildManagementMode='runs';
+        buildDetailMode=true;
+        buildRunTab='summary';
+        renderProject();
+        clearInterval(pollTimer);
+        pollTimer=setInterval(refreshCurrent,1500);
+        return;
+      }
+
+      removeClientPrepareRun();
+      current.buildStatus='building';
+      if(d.run)current.buildRuns=[d.run,...((current.buildRuns||[]).filter(r=>r.id!==d.run.id))];
+      current.buildStage=d.stage||current.buildStage||'queued';
+      current.buildStartedAt=current.buildStartedAt||new Date().toISOString();
+      selectedBuildRunIndex=0;
+      selectedBuildRunId=d.run?.id||'';
+      selectedBuildStepId='';
+      buildDetailMode=true;
+      buildRunTab='summary';
+      buildManagementMode='runs';
+      renderProject();
+      clearInterval(pollTimer);
+      pollTimer=setInterval(refreshCurrent,1500);
+    }catch(e){
+      setClientPrepareRun('failed',String(e?.message||e||'Build could not start.'));
+    }finally{
+      buildUiBusy=false;
+      $('buildTop').textContent=normalLabel;
+      $('buildPage').textContent=normalLabel;
+      if(current)renderProject();
     }
-  }
-  if((current.platform||'android')==='android' && !(signingInfo.configured||signingInfo.automaticReady)){
-    switchSection('build');
-    const ready=await ensureProjectSigningReady({force:true});
-    if(!ready){
-      alert('APK Studio could not create or connect the signing key. Open Signing to see the exact error.');
-      return;
-    }
-  }
-  const signingReady=(current.platform||'android')!=='android'||isSigningConnected(signingInfo);
-  if(!signingReady){
-    switchSection('build');
-    alert('APK Studio is still preparing the signing key. Build will unlock automatically when the key is ready.');
-    return;
-  }
-  if(current.buildSupported===false){
-    switchSection('build');
-    alert(current.buildUnsupportedReason||'This package can be inspected but cannot be rebuilt safely from the compiled artifact.');
-    return;
-  }
-  try{
-    const d=await api('/api/projects/'+current.id+'/build',{method:'POST',timeout:30000});
-    current.buildStatus='building';
-    if(d.run)current.buildRuns=[d.run,...((current.buildRuns||[]).filter(r=>r.id!==d.run.id))];
-    current.buildStage=d.stage||current.buildStage||'queued';
-    current.buildStartedAt=current.buildStartedAt||new Date().toISOString();
-    selectedBuildRunIndex=0;selectedBuildRunId=d.run?.id||'';selectedBuildStepId='';buildDetailMode=true;buildRunTab='summary';buildManagementMode='runs';
-    switchSection('build');
-    renderProject();
-    clearInterval(pollTimer);
-    pollTimer=setInterval(refreshCurrent,1500);
-  }catch(e){alert(e.message)}
+  })();
+
+  try{return await buildClickPromise}
+  finally{buildClickPromise=null}
 }
 async function ensureLocalSigningAgentVersion(){
   if(activeProjectBase!==LOCAL_API)return true;
