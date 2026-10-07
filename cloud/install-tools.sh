@@ -21,6 +21,11 @@ if [ ! -f "$TOOLS/jadx/lib/jadx-1.5.6-all.jar" ]; then
   rm -f "$TOOLS/jadx.zip"
 fi
 
+if [ ! -f "$TOOLS/uber-apk-signer-1.3.0.jar" ]; then
+  echo "Installing modern Android APK signer..."
+  curl -L --fail --retry 3 "https://github.com/patrickfav/uber-apk-signer/releases/download/v1.3.0/uber-apk-signer-1.3.0.jar" -o "$TOOLS/uber-apk-signer-1.3.0.jar"
+fi
+
 if [ ! -f "$TOOLS/apktool/apktool.jar" ]; then
   echo "Installing Apktool 3.0.3..."
   curl -L --fail --retry 3 "https://github.com/iBotPeaches/Apktool/releases/download/v3.0.3/apktool_3.0.3.jar" -o "$TOOLS/apktool/apktool.jar"
