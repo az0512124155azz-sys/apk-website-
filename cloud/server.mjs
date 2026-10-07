@@ -10,6 +10,7 @@ import { spawn } from 'node:child_process';
 import {ROOT,init,projectDir,safeJoin,readMeta,writeMeta,listDir} from './lib.mjs';
 import {decompile,rebuild,ensureAutomaticSigningKey} from './tasks.mjs';
 import {createBuildRun,listBuildRuns,readStepLog} from './workflows.mjs';
+import {detectPlatform,detectFormat,storedOriginalName,inspectPackage,rebuildPackage} from './platform-tasks.mjs';
 
 await init();
 const app=express();
@@ -19,7 +20,7 @@ const sessionSecret=process.env.SESSION_SECRET||'apk-studio-dev-secret-change-me
 const githubClientId=process.env.GITHUB_CLIENT_ID||'';
 const githubClientSecret=process.env.GITHUB_CLIENT_SECRET||'';
 const publicOrigin=process.env.PUBLIC_ORIGIN||'https://apk-website-sable.vercel.app';
-const AGENT_VERSION='1.2.2';
+const AGENT_VERSION='1.3.0';
 app.use(cors({origin:true}));
 app.use((req,_res,next)=>{ console.log(new Date().toISOString(), req.method, req.url); next(); });
 app.use(express.json({limit:'10mb'}));
@@ -28,8 +29,9 @@ const upload=multer({
   dest:path.join(os.tmpdir(),'apk-studio-upload'),
   limits:{fileSize:maxMb*1024*1024},
   fileFilter:(_req,file,cb)=>{
-    const ok=file.originalname.toLowerCase().endsWith('.apk');
-    cb(ok?null:new Error('Only APK files are accepted'),ok);
+    const name=file.originalname.toLowerCase();
+    const ok=/\.(apk|exe|msi|msix|appx|appxbundle|msixbundle|appimage|deb|rpm|elf|run|zip|tar|tgz|txz|tar\.gz|tar\.xz)$/i.test(name);
+    cb(ok?null:new Error('Supported files: APK, EXE, MSI, MSIX, APPX, ZIP, AppImage, DEB, RPM, ELF, TAR/TGZ/TXZ'),ok);
   }
 });
 
@@ -258,19 +260,20 @@ async function syncAutoRepo(token,id,{workspace=true}={}){
   let cloned=false;
   try{await gitRun(dir,['clone','--depth','1',repoInfo.clone_url,work],token);cloned=true}catch{}
   if(cloned){for(const entry of await fs.readdir(work)){if(entry!=='.git')await fs.remove(path.join(work,entry))}}
-  const original=path.join(dir,'original.apk');
+  const sourceFile=meta.sourceFile||'original.apk';
+  const original=path.join(dir,sourceFile);
   if(await fs.pathExists(original)){
     const st=await fs.stat(original);
-    if(st.size<95*1024*1024)await fs.copy(original,path.join(work,'original.apk'));
+    if(st.size<95*1024*1024)await fs.copy(original,path.join(work,sourceFile));
   }
   if(workspace){
     const editable=path.join(dir,'editable'),readable=path.join(dir,'readable');
     if(await fs.pathExists(editable))await fs.copy(editable,path.join(work,'rebuildable'));
     if(await fs.pathExists(readable))await fs.copy(readable,path.join(work,'readable'));
   }
-  const manifest={format:2,projectId:id,originalName:meta.originalName,size:meta.size,status:meta.status,stage:meta.stage,readableAvailable:meta.readableAvailable,readableMode:meta.readableMode,updatedAt:new Date().toISOString()};
+  const manifest={formatVersion:3,projectId:id,originalName:meta.originalName,size:meta.size,status:meta.status,stage:meta.stage,platform:meta.platform||'android',format:meta.format||'apk',sourceFile:meta.sourceFile||'original.apk',readableAvailable:meta.readableAvailable,readableMode:meta.readableMode,buildSupported:meta.buildSupported,buildMode:meta.buildMode,updatedAt:new Date().toISOString()};
   await fs.writeJson(path.join(work,'apk-studio.json'),manifest,{spaces:2});
-  await fs.writeJson(path.join(work,'apk-studio.code-workspace'),{folders:[{name:'Rebuildable APK',path:'rebuildable'},...((await fs.pathExists(path.join(work,'readable')))?[{name:'Readable Source',path:'readable'}]:[])]},{spaces:2});
+  await fs.writeJson(path.join(work,'apk-studio.code-workspace'),{folders:[{name:(meta.platform||'android')==='android'?'Rebuildable APK':'Editable Package',path:'rebuildable'},...((await fs.pathExists(path.join(work,'readable')))?[{name:'Readable Analysis',path:'readable'}]:[])]},{spaces:2});
   if(!cloned)await gitRun(work,['init'],token);
   await gitRun(work,['config','user.name','APK Studio'],token);
   await gitRun(work,['config','user.email','apk-studio@users.noreply.github.com'],token);
@@ -295,12 +298,16 @@ async function ensureProjectAvailable(req,id){
   const clone=path.join(dir,'restore');
   await gitRun(dir,['clone','--depth','1',repoInfo.clone_url,clone],token);
   const manifest=await fs.readJson(path.join(clone,'apk-studio.json')).catch(()=>({}));
-  if(await fs.pathExists(path.join(clone,'original.apk')))await fs.copy(path.join(clone,'original.apk'),path.join(dir,'original.apk'));
+  const restoredSource=manifest.sourceFile||'original.apk';
+  if(await fs.pathExists(path.join(clone,restoredSource)))await fs.copy(path.join(clone,restoredSource),path.join(dir,restoredSource));
   if(await fs.pathExists(path.join(clone,'rebuildable')))await fs.copy(path.join(clone,'rebuildable'),path.join(dir,'editable'));
   if(await fs.pathExists(path.join(clone,'readable')))await fs.copy(path.join(clone,'readable'),path.join(dir,'readable'));
-  const restored={id,originalName:manifest.originalName||repoName+'.apk',size:manifest.size||0,status:(await fs.pathExists(path.join(dir,'editable')))?'ready':'queued',stage:(await fs.pathExists(path.join(dir,'editable')))?'ready':'queued',readableAvailable:manifest.readableAvailable!==false,readableMode:manifest.readableMode||'github',githubRepo:repoInfo.full_name,githubUrl:repoInfo.html_url,githubCloneUrl:repoInfo.clone_url,persistent:true,restoredAt:new Date().toISOString(),createdAt:new Date().toISOString(),updatedAt:new Date().toISOString()};
+  const restored={id,originalName:manifest.originalName||repoName,platform:manifest.platform||'android',format:manifest.format||'apk',sourceFile:restoredSource,size:manifest.size||0,status:(await fs.pathExists(path.join(dir,'editable')))?'ready':'queued',stage:(await fs.pathExists(path.join(dir,'editable')))?'ready':'queued',readableAvailable:manifest.readableAvailable!==false,readableMode:manifest.readableMode||'github',buildSupported:manifest.buildSupported,buildMode:manifest.buildMode,githubRepo:repoInfo.full_name,githubUrl:repoInfo.html_url,githubCloneUrl:repoInfo.clone_url,persistent:true,restoredAt:new Date().toISOString(),createdAt:new Date().toISOString(),updatedAt:new Date().toISOString()};
   await fs.writeJson(metaFile,restored,{spaces:2});await fs.writeFile(path.join(dir,'build.log'),'[restored from GitHub]\n');
-  if(restored.status==='queued'&&await fs.pathExists(path.join(dir,'original.apk')))void decompile(id);
+  if(restored.status==='queued'&&await fs.pathExists(path.join(dir,restoredSource))){
+    if(restored.platform==='android')void decompile(id);
+    else void inspectPackage(id);
+  }
   return restored;
 }
 
@@ -335,11 +342,14 @@ app.get('/api/projects',async(_req,res)=>{
 
 app.post('/api/projects/upload',upload.single('apk'),async(req,res,next)=>{
   try{
-    if(!req.file)throw new Error('APK file is required');
+    if(!req.file)throw new Error('A project file is required');
     const id=crypto.randomUUID(),dir=projectDir(id);
+    const platform=detectPlatform(req.file.originalname,String(req.body.platform||''));
+    const format=detectFormat(req.file.originalname);
+    const sourceFile=storedOriginalName(req.file.originalname,platform);
     await fs.ensureDir(dir);
-    await fs.move(req.file.path,path.join(dir,'original.apk'),{overwrite:true});
-    const meta={id,originalName:req.file.originalname,size:req.file.size,status:'queued',stage:'queued',createdAt:new Date().toISOString(),updatedAt:new Date().toISOString()};
+    await fs.move(req.file.path,path.join(dir,sourceFile),{overwrite:true});
+    const meta={id,originalName:req.file.originalname,platform,format,sourceFile,size:req.file.size,status:'queued',stage:'queued',createdAt:new Date().toISOString(),updatedAt:new Date().toISOString()};
     await fs.writeJson(path.join(dir,'project.json'),meta,{spaces:2});
     await fs.writeFile(path.join(dir,'build.log'),'');
     const token=githubToken(req);
@@ -347,7 +357,10 @@ app.post('/api/projects/upload',upload.single('apk'),async(req,res,next)=>{
       try{const backup=await syncAutoRepo(token,id,{workspace:false});Object.assign(meta,backup.project)}
       catch(e){await fs.appendFile(path.join(dir,'build.log'),'[warning] GitHub backup failed: '+String(e.message||e)+'\n')}
     }
-    void (async()=>{await decompile(id);if(token){try{await syncAutoRepo(token,id,{workspace:true})}catch(e){await fs.appendFile(path.join(dir,'build.log'),'[warning] GitHub workspace sync failed: '+String(e.message||e)+'\n')}}})();
+    void (async()=>{
+      if(platform==='android')await decompile(id); else await inspectPackage(id);
+      if(token){try{await syncAutoRepo(token,id,{workspace:true})}catch(e){await fs.appendFile(path.join(dir,'build.log'),'[warning] GitHub workspace sync failed: '+String(e.message||e)+'\n')}}
+    })();
     res.status(202).json(await readMeta(id));
   }catch(e){next(e);}
 });
@@ -529,9 +542,13 @@ app.post('/api/projects/:id/build',async(req,res,next)=>{
         return res.status(409).json({error:'Signing key is not ready yet. Wait for APK Studio to prepare the signing key before building.'});
       }
     }
-    const run=await createBuildRun(req.params.id,{platform,title:'Build '+(platform==='android'?'APK':platform)});
+    if(platform!=='android'&&meta.buildSupported===false){
+      return res.status(409).json({error:meta.buildUnsupportedReason||'This package is available for analysis but cannot be rebuilt from the compiled artifact.'});
+    }
+    const run=await createBuildRun(req.params.id,{platform,title:'Build '+(platform==='android'?'APK':platform==='windows'?'Windows package':'Linux package')});
     await writeMeta(req.params.id,{buildStatus:'building',buildStage:'queued',buildStartedAt:new Date().toISOString(),buildError:null,activeBuildRunId:run.id});
-    void rebuild(req.params.id,{runId:run.id});
+    if(platform==='android')void rebuild(req.params.id,{runId:run.id});
+    else void rebuildPackage(req.params.id,{runId:run.id});
     res.status(202).json({ok:true,stage:'queued',run});
   }catch(e){next(e);}
 });
@@ -540,7 +557,9 @@ app.get('/api/projects/:id/apk',async(req,res,next)=>{
   try{
     const m=await readMeta(req.params.id);
     if(!m.buildArtifact)return res.status(404).json({error:'No rebuilt APK available'});
-    res.download(safeJoin(projectDir(req.params.id),m.buildArtifact),m.buildSigned?'app-rebuilt-signed.apk':'app-rebuilt.apk');
+    const artifact=safeJoin(projectDir(req.params.id),m.buildArtifact);
+    const downloadName=m.platform==='android'?(m.buildSigned?'app-rebuilt-signed.apk':'app-rebuilt.apk'):path.basename(artifact);
+    res.download(artifact,downloadName);
   }catch(e){next(e);}
 });
 
