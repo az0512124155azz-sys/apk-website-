@@ -583,12 +583,16 @@ async function deleteProject(id){if(!confirm('Delete this project?'))return;try{
 
 async function openProject(id){
   clearInterval(pollTimer);
+  signingInfo={mode:'apkstudio',configured:false,automaticReady:false};
   const listed=projects.find(p=>p.id===id);
   activeProjectBase=listed?listed._base:'';
   current=await api('/api/projects/'+id,{timeout:45000});openedAt=Date.now();lastProgressDone=null;lastProgressChangedAt=Date.now();recoveryRequested=false;
   $('projectsView').classList.add('hidden');$('workspaceView').classList.remove('hidden');
   const name=(current.originalName||id).replace(/\.apk$/i,'');$('repoName').textContent=name;$('topRepoName').textContent=name;
-  $('zipLink').href=API+'/api/projects/'+id+'/download';renderProject();dir='';selected='';setRoot('editable');loadDir();loadSigningStatus();
+  $('zipLink').href=(activeProjectBase||API)+'/api/projects/'+id+'/download';
+  renderProject();dir='';selected='';setRoot('editable');loadDir();
+  await loadSigningStatus();
+  renderProject();
   pollTimer=setInterval(refreshCurrent,1500);
 }
 function goHome(){clearInterval(pollTimer);current=null;$('workspaceView').classList.add('hidden');$('projectsView').classList.remove('hidden');loadProjects()}
@@ -625,7 +629,10 @@ function progressFromLog(log=''){
 }
 function renderProject(){
   $('repoStatus').textContent='● '+current.status;$('repoStatus').className='project-status '+current.status;
-  const ready=current.status==='ready';$('buildTop').disabled=!ready||current.buildStatus==='building';$('buildPage').disabled=!ready||current.buildStatus==='building';
+  const ready=current.status==='ready';
+  const signingReady=!!(signingInfo.configured||signingInfo.automaticReady);
+  $('buildTop').disabled=!ready||!signingReady||current.buildStatus==='building';
+  $('buildPage').disabled=!ready||!signingReady||current.buildStatus==='building';
   const b=$('statusBanner');b.className='status-banner';b.classList.remove('hidden');
   if(current.status==='error'){b.classList.add('error');$('statusTitle').textContent='Decompile failed';$('statusText').textContent=current.error||'Unknown error'}
   else if(!ready){const pr=progressFromLog(current.log||'');const sec=Math.floor((Date.now()-openedAt)/1000);$('statusTitle').textContent=current.stage==='jadx'?'Decompiling':'Preparing project';$('statusText').innerHTML='<span class="stage-detail">'+esc(current.stage||current.status)+(pr?' · '+pr.pct+'% ('+pr.done+'/'+pr.total+')':'')+' · '+sec+'s</span>'}
@@ -677,6 +684,12 @@ async function openFile(path){
 async function saveFile(){if(!selected||root!=='editable')return;const q=new URLSearchParams({root,path:selected});try{await api('/api/projects/'+current.id+'/file?'+q,{method:'PUT',headers:{'content-type':'application/json'},body:JSON.stringify({content:$('editor').value}),timeout:30000});saved=$('editor').value;$('dirtyState').textContent='';$('saveFile').disabled=true}catch(e){alert(e.message)}}
 async function build(){
   if(!current)return;
+  const signingReady=!!(signingInfo.configured||signingInfo.automaticReady);
+  if(!signingReady){
+    switchSection('build');
+    alert('APK Studio is still preparing the signing key. Build will unlock automatically when the key is ready.');
+    return;
+  }
   try{
     const d=await api('/api/projects/'+current.id+'/build',{method:'POST',timeout:30000});
     current.buildStatus='building';
@@ -692,13 +705,29 @@ async function loadSigningStatus(){
   if(!current)return;
   try{
     signingInfo=await api('/api/projects/'+current.id+'/signing',{timeout:15000});
+    if(!signingInfo.configured && !signingInfo.automaticReady && current.status==='ready'){
+      $('signingStatus').textContent='Automatic · preparing APK Studio key…';
+      renderProject();
+      try{
+        signingInfo=await api('/api/projects/'+current.id+'/signing/prepare',{method:'POST',timeout:120000});
+      }catch(e){
+        $('signingStatus').textContent='Signing key preparation failed';
+        $('buildTop').disabled=true;
+        $('buildPage').disabled=true;
+        return;
+      }
+    }
     $('signingStatus').textContent=signingInfo.configured
       ? 'Automatic ✅ · Original key'
       : (signingInfo.automaticReady?'Automatic ✅ · APK Studio key ready':'Automatic · preparing APK Studio key…');
     $('removeSigning').classList.toggle('hidden',!signingInfo.configured);
     $('configureSigning').textContent='Advanced';
+    renderProject();
   }catch(e){
-    $('signingStatus').textContent='Automatic ✅';
+    signingInfo={mode:'apkstudio',configured:false,automaticReady:false};
+    $('signingStatus').textContent='Signing key unavailable';
+    $('buildTop').disabled=true;
+    $('buildPage').disabled=true;
   }
 }
 async function saveSigningKey(){
@@ -725,6 +754,7 @@ async function removeSigningKey(){
   if(!current||!confirm('Switch back to the APK Studio signing key?'))return;
   try{
     await api('/api/projects/'+current.id+'/signing',{method:'DELETE',timeout:30000});
+    signingInfo={mode:'apkstudio',configured:false,automaticReady:false};
     current.buildStatus='stale';current.buildArtifact=null;
     await loadSigningStatus();renderProject();
   }catch(e){alert(e.message)}
