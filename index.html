@@ -235,6 +235,11 @@ async function api(path,opts={}){
 function isDesktopComputer(){
   return !/Android|iPhone|iPad|iPod|Mobile/i.test(navigator.userAgent)&&window.innerWidth>=760;
 }
+async function wakeLocalAgent(){
+  try{
+    location.href='apkstudiolocal://start';
+  }catch{}
+}
 async function probeLocalAgent(timeout=1800){
   const controller=new AbortController();const timer=setTimeout(()=>controller.abort(),timeout);
   try{
@@ -255,6 +260,7 @@ function startLocalReconnectWatcher(){
       $('cloudState').textContent='● local processor online';$('cloudState').className='cloud-state ok';
     }else{
       $('cloudState').textContent='● reconnecting to this computer…';$('cloudState').className='cloud-state';
+      wakeLocalAgent();
     }
   },5000);
 }
@@ -333,6 +339,7 @@ async function checkProcessor(){
   }catch(e){
     if(processorMode==='local'){
       $('cloudState').textContent='● reconnecting to this computer…';
+      wakeLocalAgent();
       $('cloudState').className='cloud-state';
       for(let i=0;i<5;i++){
         await new Promise(r=>setTimeout(r,1000));
@@ -688,6 +695,13 @@ window.addEventListener('keydown',e=>{if((e.ctrlKey||e.metaKey)&&e.key.toLowerCa
     }
   }else{
     API=processorMode==='local'?LOCAL_API:CLOUD_API;
+    if(processorMode==='local' && !(await probeLocalAgent(1500))){
+      wakeLocalAgent();
+      for(let i=0;i<6;i++){
+        await new Promise(r=>setTimeout(r,800));
+        if(await probeLocalAgent(1200))break;
+      }
+    }
   }
   renderProcessorMode();
   startLocalReconnectWatcher();
