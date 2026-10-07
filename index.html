@@ -190,7 +190,9 @@ html,body{background:#0d1117;color:#e6edf3;margin:0}.hidden{display:none!importa
 <script>
 const CLOUD_API='/processor';
 const LOCAL_API='http://127.0.0.1:32145';
-let processorMode=localStorage.getItem('apkstudio_processor_mode')||'';
+function getCookie(name){const m=document.cookie.match(new RegExp('(?:^|; )'+name.replace(/[$()*+.?[\]^{|}-]/g,'\\let processorMode=localStorage.getItem('apkstudio_processor_mode')||'';')+'=([^;]*)'));return m?decodeURIComponent(m[1]):''}
+function rememberProcessorMode(mode){rememberProcessorMode(mode);document.cookie='apkstudio_processor_mode='+encodeURIComponent(mode)+'; Path=/; Max-Age=31536000; SameSite=Lax'}
+let processorMode=localStorage.getItem('apkstudio_processor_mode')||getCookie('apkstudio_processor_mode')||'';
 let API=processorMode==='local'?LOCAL_API:CLOUD_API;
 const $=id=>document.getElementById(id);
 let projects=[],current=null,root='editable',dir='',selected='',saved='',pollTimer=null,openedAt=0;
@@ -220,6 +222,29 @@ async function api(path,opts={}){
 function isDesktopComputer(){
   return !/Android|iPhone|iPad|iPod|Mobile/i.test(navigator.userAgent)&&window.innerWidth>=760;
 }
+async function probeLocalAgent(timeout=1800){
+  const controller=new AbortController();const timer=setTimeout(()=>controller.abort(),timeout);
+  try{
+    const r=await fetch(LOCAL_API+'/health',{cache:'no-store',signal:controller.signal});
+    const d=await r.json().catch(()=>null);
+    return !!(r.ok&&d?.ok);
+  }catch{return false}
+  finally{clearTimeout(timer)}
+}
+let localReconnectTimer=null;
+function startLocalReconnectWatcher(){
+  if(localReconnectTimer)clearInterval(localReconnectTimer);
+  if(processorMode!=='local')return;
+  localReconnectTimer=setInterval(async()=>{
+    if(processorMode!=='local')return;
+    const ok=await probeLocalAgent(1500);
+    if(ok){
+      $('cloudState').textContent='● local processor online';$('cloudState').className='cloud-state ok';
+    }else{
+      $('cloudState').textContent='● reconnecting to this computer…';$('cloudState').className='cloud-state';
+    }
+  },5000);
+}
 function renderProcessorMode(){
   const label=processorMode==='local'?'This computer':'Cloud';
   $('modeButtonProjects').textContent=label;
@@ -246,7 +271,7 @@ async function startAutomaticLocalInstall(){
       if(r.ok&&d?.ok){
         processorMode='local';
         API=LOCAL_API;
-        localStorage.setItem('apkstudio_processor_mode','local');
+        rememberProcessorMode('local');
         renderProcessorMode();
         $('localInstallTitle').textContent='Local Agent ready';
         $('localInstallText').textContent='Switching APK Studio to this computer…';
@@ -267,8 +292,9 @@ async function startAutomaticLocalInstall(){
 async function setProcessorMode(mode,{close=true}={}){
   processorMode=mode;
   API=mode==='local'?LOCAL_API:CLOUD_API;
-  localStorage.setItem('apkstudio_processor_mode',mode);
+  rememberProcessorMode(mode);
   renderProcessorMode();
+  startLocalReconnectWatcher();
   const ok=await checkProcessor();
   if(mode==='local'&&!ok){
     $('processorModeOverlay').classList.remove('hidden');
@@ -292,8 +318,22 @@ async function checkProcessor(){
     $('cloudState').className='cloud-state ok';
     return true;
   }catch(e){
-    $('cloudState').textContent=processorMode==='local'?'● local processor unavailable':'● cloud processor unavailable';
-    $('cloudState').className='cloud-state bad';
+    if(processorMode==='local'){
+      $('cloudState').textContent='● reconnecting to this computer…';
+      $('cloudState').className='cloud-state';
+      for(let i=0;i<5;i++){
+        await new Promise(r=>setTimeout(r,1000));
+        if(await probeLocalAgent(1200)){
+          $('cloudState').textContent='● local processor online';$('cloudState').className='cloud-state ok';
+          return true;
+        }
+      }
+      $('cloudState').textContent='● local processor unavailable';
+      $('cloudState').className='cloud-state bad';
+    }else{
+      $('cloudState').textContent='● cloud processor unavailable';
+      $('cloudState').className='cloud-state bad';
+    }
     return false;
   }
 }
@@ -624,11 +664,20 @@ $('removeSigning').onclick=()=>removeSigningKey();
 document.querySelectorAll('.repo-nav button').forEach(b=>b.onclick=()=>switchSection(b.dataset.section));
 window.addEventListener('keydown',e=>{if((e.ctrlKey||e.metaKey)&&e.key.toLowerCase()==='s'){e.preventDefault();saveFile()}});
 (async()=>{
-  if(!isDesktopComputer()){processorMode='cloud';API=CLOUD_API;localStorage.setItem('apkstudio_processor_mode','cloud')}
-  renderProcessorMode();
-  if(isDesktopComputer()&&!processorMode){
-    processorMode='cloud';API=CLOUD_API;renderProcessorMode();showProcessorModeDialog();
+  if(!isDesktopComputer()){
+    processorMode='cloud';API=CLOUD_API;rememberProcessorMode('cloud');
+  }else if(!processorMode){
+    const localAlive=await probeLocalAgent(1800);
+    if(localAlive){
+      processorMode='local';API=LOCAL_API;rememberProcessorMode('local');
+    }else{
+      processorMode='cloud';API=CLOUD_API;renderProcessorMode();showProcessorModeDialog();
+    }
+  }else{
+    API=processorMode==='local'?LOCAL_API:CLOUD_API;
   }
+  renderProcessorMode();
+  startLocalReconnectWatcher();
   await checkProcessor();
   await finishGithubHandoff();
   await loadGithub();
