@@ -64,7 +64,19 @@ html,body{background:#0d1117;color:#e6edf3;margin:0}.hidden{display:none!importa
 .actions-signing{margin:0;border:0;border-bottom:1px solid #30363d;border-radius:0}
 .actions-artifact{margin:0;border:0;border-bottom:1px solid #30363d;border-radius:0}
 .actions-log{margin:0;border:0;border-radius:0}
-.actions-log .log-head{border-radius:0}
+.actions-log .log-head{border-radius:0}.workflow-job-shell{display:grid;grid-template-columns:285px minmax(0,1fr);min-height:380px;border-bottom:1px solid #30363d}
+.workflow-steps-panel{border-right:1px solid #30363d;background:#0d1117;min-width:0}
+.workflow-job-head{height:46px;border-bottom:1px solid #21262d;display:flex;align-items:center;gap:8px;padding:0 14px;font-size:12px}
+.workflow-job-head span{color:#3fb950}
+.workflow-steps-list{padding:8px}
+.workflow-step{width:100%;min-height:42px;border:0;border-radius:6px;background:transparent;color:#c9d1d9;display:grid;grid-template-columns:22px minmax(0,1fr);align-items:center;gap:8px;padding:6px 8px;text-align:left;cursor:pointer}
+.workflow-step:hover,.workflow-step.selected{background:#161b22}
+.workflow-step-icon{width:18px;height:18px;border-radius:50%;display:grid;place-items:center;font-size:11px;font-weight:700}
+.workflow-step-icon.completed{background:#238636;color:#fff}.workflow-step-icon.failed{border:2px solid #f85149;color:#f85149}.workflow-step-icon.in_progress{border:2px solid #d29922;color:#d29922}.workflow-step-icon.queued{border:2px solid #6e7681;color:#8b949e}.workflow-step-icon.skipped{border:2px solid #6e7681;color:#8b949e}
+.workflow-step-text{display:flex;flex-direction:column;gap:2px;min-width:0}.workflow-step-text strong{font-size:12px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.workflow-step-text span{font-size:10px;color:#8b949e}
+.workflow-step-log{margin:0;border:0;border-radius:0;min-width:0}.workflow-step-log pre{max-height:none;height:100%;min-height:335px}
+.log-head{position:relative}.log-live-dot{margin-left:auto;width:7px;height:7px;border-radius:50%;background:#6e7681}.log-live-dot.live{background:#d29922;box-shadow:0 0 0 3px #d2992222}
+@media(max-width:900px){.workflow-job-shell{grid-template-columns:1fr}.workflow-steps-panel{border-right:0;border-bottom:1px solid #30363d}.workflow-steps-list{display:flex;overflow:auto}.workflow-step{min-width:190px}.workflow-step-log pre{min-height:280px}}
 @media(max-width:900px){.build-actions-shell{grid-template-columns:1fr}.build-actions-sidebar{border-right:0;border-bottom:1px solid #30363d;display:flex;gap:6px;overflow:auto;padding:8px 12px}.build-actions-title,.build-side-label,.build-side-separator{display:none}.build-side-item{width:auto;min-width:max-content}.build-actions-main{padding:16px 12px}.build-run-row{grid-template-columns:28px minmax(0,1fr) 110px}.build-run-time{display:none}}
 @media(max-width:680px){.mode-options{grid-template-columns:1fr}.github-login{display:none}.github-account-button{padding:0 7px}.github-menu{right:0}.mobile-upload{display:inline-flex}
 .mobile-upload{display:inline-flex}.topbar .repo-crumb,.topbar .muted,.topbar .repo-current{display:none}.projects-head{align-items:flex-start}.status-banner{margin:8px 12px 0}.repo-titlebar,.repo-nav{padding-left:12px;padding-right:12px}.code-workspace{display:block;height:auto}.explorer{height:280px}.editor-area{height:520px}.button.quiet{display:none}}
@@ -237,6 +249,21 @@ html,body{background:#0d1117;color:#e6edf3;margin:0}.hidden{display:none!importa
           <span id="buildDetailStatus" class="build-detail-status">○ idle</span>
         </div>
 
+        <div class="workflow-job-shell">
+          <aside class="workflow-steps-panel">
+            <div class="workflow-job-head"><span>◉</span><strong id="buildJobTitle">Build</strong></div>
+            <div id="buildSteps" class="workflow-steps-list"></div>
+          </aside>
+          <section class="log-section actions-log workflow-step-log">
+            <div class="log-head">
+              <strong id="logTitle">Select a step</strong>
+              <span id="logSubtitle">live output</span>
+              <span class="log-live-dot" id="buildLogLiveDot"></span>
+            </div>
+            <pre id="buildLog">Select a build step to view its output.</pre>
+          </section>
+        </div>
+
         <div class="signing-panel actions-signing">
           <div class="signing-row">
             <span>APK signing</span>
@@ -260,11 +287,6 @@ html,body{background:#0d1117;color:#e6edf3;margin:0}.hidden{display:none!importa
         </div>
 
         <a class="artifact-row actions-artifact hidden" id="apkArtifact">↓ <div><strong id="artifactName">app-rebuilt-signed.apk</strong><span id="artifactStatus">Signed APK ready to install</span></div></a>
-
-        <section class="log-section actions-log">
-          <div class="log-head"><strong id="logTitle">Build log</strong><span id="logSubtitle">live output</span></div>
-          <pre id="buildLog">Waiting for processor output…</pre>
-        </section>
       </section>
       <div id="buildTable" class="hidden"></div>
     </div>
