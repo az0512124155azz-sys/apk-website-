@@ -190,7 +190,7 @@ html,body{background:#0d1117;color:#e6edf3;margin:0}.hidden{display:none!importa
 <script>
 const CLOUD_API='/processor';
 const LOCAL_API='http://127.0.0.1:32145';
-const REQUIRED_LOCAL_AGENT_VERSION='1.2.1';
+const REQUIRED_LOCAL_AGENT_VERSION='1.2.2';
 function getCookie(name){
   const parts=document.cookie?document.cookie.split('; '):[];
   for(const part of parts){
@@ -253,7 +253,8 @@ function versionLt(a,b){
 }
 let localAgentVersion='';
 async function ensureLocalAgentCurrent(){
-  if(processorMode!=='local')return true;
+  const localProject=activeProjectBase===LOCAL_API;
+  if(processorMode!=='local'&&!localProject)return true;
   try{
     const r=await fetch(LOCAL_API+'/health',{cache:'no-store'});
     const d=await r.json();
@@ -705,18 +706,49 @@ async function loadSigningStatus(){
   if(!current)return;
   try{
     signingInfo=await api('/api/projects/'+current.id+'/signing',{timeout:15000});
+
     if(!signingInfo.configured && !signingInfo.automaticReady && current.status==='ready'){
       $('signingStatus').textContent='Automatic · preparing APK Studio key…';
       renderProject();
+
+      let prepareError=null;
       try{
         signingInfo=await api('/api/projects/'+current.id+'/signing/prepare',{method:'POST',timeout:120000});
       }catch(e){
-        $('signingStatus').textContent='Signing key preparation failed';
+        prepareError=e;
+      }
+
+      if(prepareError && activeProjectBase===LOCAL_API){
+        $('signingStatus').textContent='Automatic · updating local signing service…';
+        const updated=await ensureLocalAgentCurrent();
+        if(updated){
+          for(let i=0;i<20;i++){
+            try{
+              const hr=await fetch(LOCAL_API+'/health',{cache:'no-store'});
+              const hd=await hr.json();
+              if(hr.ok&&!versionLt(hd.version,REQUIRED_LOCAL_AGENT_VERSION))break;
+            }catch{}
+            await new Promise(r=>setTimeout(r,1000));
+          }
+          try{
+            signingInfo=await api('/api/projects/'+current.id+'/signing/prepare',{method:'POST',timeout:120000});
+            prepareError=null;
+          }catch(e){
+            prepareError=e;
+          }
+        }
+      }
+
+      if(prepareError){
+        signingInfo={mode:'apkstudio',configured:false,automaticReady:false};
+        const msg=String(prepareError.message||prepareError||'Unknown signing error');
+        $('signingStatus').textContent='Signing key failed: '+msg.slice(0,220);
         $('buildTop').disabled=true;
         $('buildPage').disabled=true;
         return;
       }
     }
+
     $('signingStatus').textContent=signingInfo.configured
       ? 'Automatic ✅ · Original key'
       : (signingInfo.automaticReady?'Automatic ✅ · APK Studio key ready':'Automatic · preparing APK Studio key…');
@@ -725,7 +757,7 @@ async function loadSigningStatus(){
     renderProject();
   }catch(e){
     signingInfo={mode:'apkstudio',configured:false,automaticReady:false};
-    $('signingStatus').textContent='Signing key unavailable';
+    $('signingStatus').textContent='Signing key unavailable: '+String(e.message||e).slice(0,180);
     $('buildTop').disabled=true;
     $('buildPage').disabled=true;
   }
