@@ -852,8 +852,9 @@ async function refreshCurrent(){
       const rid=current.remoteBuildProjectId||remoteBuildProjectId;
       const remote=await apiFromBase(CLOUD_API,'/api/projects/'+rid,{timeout:20000});
       current.buildStatus=remote.buildStatus;
-      current.buildStage=remote.buildStage;
+      current.buildStage=remote.buildStage||remote.stage;
       current.buildError=remote.buildError;
+      current.remoteCacheHit=!!remote.remoteCacheHit;
       current.buildArtifact=remote.buildArtifact;
       current.buildSigned=remote.buildSigned;
       current.buildRuns=remote.buildRuns||[];
@@ -1306,26 +1307,50 @@ function transferText(prefix,loaded,total){
   return prefix+' · '+mb(loaded)+' transferred';
 }
 
+async function downloadLocalBuildBundle(projectId,onProgress){
+  const tryUrl=async(path)=>{
+    try{
+      return await xhrDownloadBlob(LOCAL_API+path,{onProgress});
+    }catch(e){
+      if(/HTTP 404|Cannot GET/i.test(String(e?.message||e)))return null;
+      throw e;
+    }
+  };
+
+  // New agents export only the files required for rebuilding. Old agents fall
+  // back to the full project archive without breaking compatibility.
+  const compact=await tryUrl('/api/projects/'+encodeURIComponent(projectId)+'/build-bundle');
+  if(compact)return {blob:compact,compact:true};
+  const full=await xhrDownloadBlob(
+    LOCAL_API+'/api/projects/'+encodeURIComponent(projectId)+'/download',
+    {onProgress}
+  );
+  return {blob:full,compact:false};
+}
+
 async function startRemoteModernBuildFromLocal(){
   if(!current)return false;
   setClientPrepareRun('in_progress','Local Agent '+(localAgentVersion||'old')+' uses the legacy signer. Switching this build to the modern cloud engine…');
 
   let lastExportMessage='';
-  const workspaceBlob=await xhrDownloadBlob(
-    LOCAL_API+'/api/projects/'+encodeURIComponent(current.id)+'/download',
-    {onProgress:(loaded,total)=>{
-      const msg=transferText('Exporting local workspace',loaded,total);
-      if(msg!==lastExportMessage){
-        lastExportMessage=msg;
-        setClientPrepareRun('in_progress',msg);
-      }
-    }}
-  );
+  const bundle=await downloadLocalBuildBundle(current.id,(loaded,total)=>{
+    const msg=transferText('Exporting local build workspace',loaded,total);
+    if(msg!==lastExportMessage){
+      lastExportMessage=msg;
+      setClientPrepareRun('in_progress',msg);
+    }
+  });
+  const workspaceBlob=bundle.blob;
 
-  setClientPrepareRun('in_progress','Local workspace export complete · '+(workspaceBlob.size/1048576).toFixed(1)+' MB. Starting upload…');
+  setClientPrepareRun('in_progress',
+    (bundle.compact?'Compact build bundle':'Local workspace export')+
+    ' complete · '+(workspaceBlob.size/1048576).toFixed(1)+' MB. Starting upload…'
+  );
 
   const fd=new FormData();
   fd.append('workspace',workspaceBlob,'apk-studio-workspace.zip');
+  fd.append('projectId',current.id);
+  fd.append('editableRevision',String(current.editableRevision||''));
 
   let lastUploadMessage='';
   const remote=await xhrUploadFormData(
@@ -1344,14 +1369,16 @@ async function startRemoteModernBuildFromLocal(){
 
   remoteBuildProjectId=remote.id;
   setClientPrepareRun('completed',remote.cache
-    ? 'Workspace uploaded. Build cache found — unchanged compile output will be reused.'
-    : 'Workspace uploaded. Modern Android build started.');
+    ? 'Workspace accepted. Remote cache found — unchanged compile output can be reused.'
+    : 'Workspace accepted. Remote build preparation started in the background.'
+  );
 
   removeClientPrepareRun();
   current.buildStatus='building';
-  current.buildStage='queued';
+  current.buildStage=remote.stage||'remote-prepare';
   current.buildStartedAt=new Date().toISOString();
   current.remoteBuildProjectId=remote.id;
+  current.remoteCacheHit=!!remote.cache;
   current.buildRuns=remote.run?[remote.run]:[];
   selectedBuildRunId=remote.run?.id||'';
   selectedBuildStepId='';
@@ -1361,7 +1388,7 @@ async function startRemoteModernBuildFromLocal(){
   renderProject();
 
   clearInterval(pollTimer);
-  pollTimer=setInterval(refreshCurrent,1500);
+  pollTimer=setInterval(refreshCurrent,1200);
   return true;
 }
 
