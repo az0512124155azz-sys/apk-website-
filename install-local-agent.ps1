@@ -102,19 +102,19 @@ $java=Join-Path $cloud '.tools\\java\\bin\\java.exe'
 $agentLog=Join-Path $installDir 'agent.log'
 $agentErr=Join-Path $installDir 'agent-error.log'
 $runnerBody=@"
-\$ErrorActionPreference='SilentlyContinue'
-\$env:PORT='32145'
-\$env:WORKSPACE_ROOT='$workspace'
-\$env:JAVA_BIN='$java'
-\$env:NODE_ENV='production'
-\$env:LOCAL_PROCESSOR='1'
-\$env:APK_STUDIO_JAVA_XMS='256m'
-\$env:APK_STUDIO_JAVA_XMX='4096m'
+`$ErrorActionPreference='SilentlyContinue'
+`$env:PORT='32145'
+`$env:WORKSPACE_ROOT='$workspace'
+`$env:JAVA_BIN='$java'
+`$env:NODE_ENV='production'
+`$env:LOCAL_PROCESSOR='1'
+`$env:APK_STUDIO_JAVA_XMS='256m'
+`$env:APK_STUDIO_JAVA_XMX='4096m'
 Set-Location '$cloud'
-while(\$true){
+while(`$true){
   try{
-    \$p=Start-Process -FilePath '$nodeExeEsc' -ArgumentList 'server.mjs' -WorkingDirectory '$cloud' -WindowStyle Hidden -RedirectStandardOutput '$agentLog' -RedirectStandardError '$agentErr' -PassThru
-    \$p.WaitForExit()
+    `$p=Start-Process -FilePath '$nodeExeEsc' -ArgumentList 'server.mjs' -WorkingDirectory '$cloud' -WindowStyle Hidden -RedirectStandardOutput '$agentLog' -RedirectStandardError '$agentErr' -PassThru
+    `$p.WaitForExit()
   }catch{}
   Start-Sleep -Seconds 2
 }
@@ -146,10 +146,10 @@ $link.Save()
 # Register protocol used by the site to wake the background agent if needed.
 $wake=Join-Path $installDir 'wake-agent.ps1'
 $wakeBody=@"
-\$ErrorActionPreference='SilentlyContinue'
+`$ErrorActionPreference='SilentlyContinue'
 try{
-  \$r=Invoke-RestMethod -UseBasicParsing -Uri 'http://127.0.0.1:32145/health' -TimeoutSec 2
-  if(\$r.ok){exit 0}
+  `$r=Invoke-RestMethod -UseBasicParsing -Uri 'http://127.0.0.1:32145/health' -TimeoutSec 2
+  if(`$r.ok){exit 0}
 }catch{}
 Start-Process -FilePath "$env:WINDIR\\System32\\wscript.exe" -ArgumentList '""$launcher""' -WindowStyle Hidden
 "@
