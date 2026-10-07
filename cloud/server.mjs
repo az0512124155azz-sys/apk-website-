@@ -120,6 +120,106 @@ function validVscodeToken(id,expires,token){
   const a=Buffer.from(expected),b=Buffer.from(String(token||''));
   return a.length===b.length&&crypto.timingSafeEqual(a,b);
 }
+
+function runCapture(cmd,args,{timeoutMs=15000,cwd}={}){
+  return new Promise((resolve,reject)=>{
+    const p=spawn(cmd,args,{shell:false,cwd});
+    let out='',err='',done=false;
+    const t=setTimeout(()=>{if(done)return;done=true;try{p.kill('SIGKILL')}catch{};reject(new Error('Command timeout'))},timeoutMs);
+    p.stdout.on('data',d=>out+=d.toString());
+    p.stderr.on('data',d=>err+=d.toString());
+    p.on('error',e=>{if(done)return;done=true;clearTimeout(t);reject(e)});
+    p.on('close',code=>{if(done)return;done=true;clearTimeout(t);code===0?resolve({out,err}):reject(new Error((err||out||('exit '+code)).slice(-4000)))});
+  });
+}
+function sha256Fingerprint(text){
+  const m=String(text||'').match(/SHA256:\s*([0-9A-F:]+)/i);
+  return m?m[1].replace(/:/g,'').toUpperCase():null;
+}
+function parseSigningText(text,baseDir){
+  const get=(names)=>{
+    for(const name of names){
+      const re1=new RegExp('^\\s*'+name+'\\s*[=:]\\s*["\\\']?([^"\\\'\\r\\n]+)','mi');
+      const m1=String(text).match(re1); if(m1)return m1[1].trim();
+      const re2=new RegExp(name+'\\s*[=:]\\s*["\\\']([^"\\\']+)["\\\']','i');
+      const m2=String(text).match(re2); if(m2)return m2[1].trim();
+    }
+    return '';
+  };
+  let storeFile=get(['storeFile','store.file']);
+  const storePass=get(['storePassword','store.password']);
+  const keyAlias=get(['keyAlias','key.alias']);
+  const keyPass=get(['keyPassword','key.password'])||storePass;
+  if(!storeFile||!storePass)return null;
+  storeFile=storeFile.replace(/^file\s*\(/i,'').replace(/[()"']/g,'').trim();
+  const resolved=path.isAbsolute(storeFile)?storeFile:path.resolve(baseDir,storeFile);
+  return {storeFile:resolved,storePass,keyAlias,keyPass};
+}
+async function collectSigningConfigs(){
+  if(process.env.LOCAL_PROCESSOR!=='1')return [];
+  const home=os.homedir();
+  const roots=[
+    path.join(home,'AndroidStudioProjects'),
+    path.join(home,'Documents'),
+    path.join(home,'OneDrive','Documents'),
+    path.join(home,'Desktop')
+  ].filter((v,i,a)=>a.indexOf(v)===i);
+  const names=new Set(['key.properties','gradle.properties','build.gradle','build.gradle.kts']);
+  const results=[];let visited=0;
+  async function walkDir(dir,depth){
+    if(depth>5||visited>1200||results.length>100)return;
+    visited++;
+    let entries;try{entries=await fs.readdir(dir,{withFileTypes:true})}catch{return}
+    for(const en of entries){
+      if(results.length>100)return;
+      if(en.name==='node_modules'||en.name==='.gradle'||en.name==='.git'||en.name==='build'||en.name==='AppData')continue;
+      const full=path.join(dir,en.name);
+      if(en.isDirectory())await walkDir(full,depth+1);
+      else if(names.has(en.name)){
+        try{
+          const text=await fs.readFile(full,'utf8');
+          const parsed=parseSigningText(text,path.dirname(full));
+          if(parsed&&await fs.pathExists(parsed.storeFile))results.push({...parsed,source:full});
+        }catch{}
+      }
+    }
+  }
+  for(const root of roots){if(await fs.pathExists(root))await walkDir(root,0)}
+  return results;
+}
+async function findOriginalSigningKey(id){
+  if(process.env.LOCAL_PROCESSOR!=='1')return {found:false,reason:'local-only'};
+  const dir=projectDir(id),apk=path.join(dir,'original.apk');
+  const javaBin=process.env.JAVA_BIN||'java';
+  const keytool=path.join(path.dirname(javaBin),process.platform==='win32'?'keytool.exe':'keytool');
+  if(!await fs.pathExists(apk)||!await fs.pathExists(keytool))return {found:false,reason:'missing-tools'};
+  let apkInfo;try{apkInfo=await runCapture(keytool,['-printcert','-jarfile',apk],{timeoutMs:20000})}catch{return {found:false,reason:'apk-cert-unreadable'}}
+  const target=sha256Fingerprint(apkInfo.out+'\n'+apkInfo.err);if(!target)return {found:false,reason:'no-apk-fingerprint'};
+  const configs=await collectSigningConfigs();
+  for(const cfg of configs){
+    try{
+      let alias=cfg.keyAlias;
+      if(!alias){
+        const l=await runCapture(keytool,['-list','-v','-keystore',cfg.storeFile,'-storepass',cfg.storePass],{timeoutMs:12000});
+        const m=(l.out+'\n'+l.err).match(/Alias name:\s*([^\r\n]+)/i); alias=m?m[1].trim():'';
+      }
+      if(!alias)continue;
+      const k=await runCapture(keytool,['-list','-v','-keystore',cfg.storeFile,'-storepass',cfg.storePass,'-alias',alias],{timeoutMs:12000});
+      const fp=sha256Fingerprint(k.out+'\n'+k.err);
+      if(fp&&fp===target){
+        const dest=path.join(dir,'user-signing.keystore');
+        await fs.copy(cfg.storeFile,dest,{overwrite:true});
+        await fs.writeJson(path.join(dir,'signing-config.json'),{
+          alias,storePass:cfg.storePass,keyPass:cfg.keyPass||cfg.storePass,
+          fileName:path.basename(cfg.storeFile),autoFound:true,source:cfg.source,updatedAt:new Date().toISOString()
+        },{spaces:2});
+        await writeMeta(id,{signingType:'Original/custom keystore',signingAutoFound:true,buildStatus:'stale',buildArtifact:null,buildError:null});
+        return {found:true,alias,fileName:path.basename(cfg.storeFile),source:cfg.source};
+      }
+    }catch{}
+  }
+  return {found:false,reason:'no-matching-key',checked:configs.length};
+}
 async function streamVsCodeZip(id,res,next){
   try{
     const dir=projectDir(id),editable=path.join(dir,'editable'),readable=path.join(dir,'readable');
@@ -285,6 +385,14 @@ app.put('/api/projects/:id/file',async(req,res,next)=>{
       buildError:null
     });
     res.json({ok:true,editableRevision:meta.editableRevision});
+  }catch(e){next(e);}
+});
+
+app.post('/api/projects/:id/signing/auto-find',async(req,res,next)=>{
+  try{
+    await ensureProjectAvailable(req,req.params.id);
+    const result=await findOriginalSigningKey(req.params.id);
+    res.json(result);
   }catch(e){next(e);}
 });
 
