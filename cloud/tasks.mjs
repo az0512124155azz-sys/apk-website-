@@ -16,7 +16,22 @@ const isWindows = process.platform === 'win32';
 const keytoolBin = path.join(javaBinDir,isWindows?'keytool.exe':'keytool');
 const jarsignerBin = path.join(javaBinDir,isWindows?'jarsigner.exe':'jarsigner');
 const signingAlias = 'apkstudio';
-const signingPassword = 'apkstudio-local-signing';
+
+async function ensureAutomaticSigningConfig(dir){
+  const configFile=path.join(dir,'automatic-signing.json');
+  let cfg=await fs.readJson(configFile).catch(()=>null);
+  if(!cfg?.storePass){
+    const secret=crypto.randomBytes(24).toString('base64url');
+    cfg={
+      alias:signingAlias,
+      storePass:secret,
+      keyPass:secret,
+      createdAt:new Date().toISOString()
+    };
+    await fs.writeJson(configFile,cfg,{spaces:2});
+  }
+  return cfg;
+}
 
 async function signingConfigFor(dir){
   const customFile=path.join(dir,'signing-config.json');
@@ -33,14 +48,39 @@ async function signingConfigFor(dir){
       fingerprint:'custom:'+keyHash+':'+String(cfg.alias||'')
     };
   }
+  const auto=await ensureAutomaticSigningConfig(dir);
   return {
     type:'apkstudio',
     keystore:path.join(dir,'apkstudio-signing.jks'),
-    alias:signingAlias,
-    storePass:signingPassword,
-    keyPass:signingPassword,
-    fingerprint:'apkstudio-project-key'
+    alias:auto.alias||signingAlias,
+    storePass:auto.storePass,
+    keyPass:auto.keyPass||auto.storePass,
+    fingerprint:'apkstudio:'+crypto.createHash('sha256').update(auto.storePass).digest('hex')
   };
+}
+
+async function ensureAutomaticSigningKey(id){
+  const dir=projectDir(id);
+  const signing=await signingConfigFor(dir);
+  if(signing.type!=='apkstudio')return signing;
+  if(await fs.pathExists(signing.keystore))return signing;
+  if(!await fs.pathExists(keytoolBin))throw new Error('keytool is missing; update the APK Studio Local Agent.');
+  await log(id,'Preparing automatic APK signing key...');
+  await run(id,keytoolBin,[
+    '-genkeypair',
+    '-keystore',signing.keystore,
+    '-storepass',signing.storePass,
+    '-keypass',signing.keyPass,
+    '-alias',signing.alias,
+    '-keyalg','RSA',
+    '-keysize','2048',
+    '-validity','10000',
+    '-dname','CN=APK Studio Automatic Signing,O=APK Studio,C=US',
+    '-noprompt'
+  ],[0],{timeoutMs:120000});
+  await writeMeta(id,{signingType:'Automatic APK Studio key',signingReady:true});
+  await log(id,'Automatic APK signing key is ready.');
+  return signing;
 }
 
 export async function decompile(id,{forceJadxOom=false,skipPerDex=false}={}){
@@ -134,6 +174,8 @@ export async function decompile(id,{forceJadxOom=false,skipPerDex=false}={}){
     ],[0]);
 
     const files=await walk(editable);
+    try{await ensureAutomaticSigningKey(id)}
+    catch(signError){await log(id,'WARNING: Automatic signing key preparation failed: '+shortError(signError))}
     await writeMeta(id,{
       status:'ready',
       stage:'ready',
@@ -199,13 +241,7 @@ export async function rebuild(id){
     }
 
     if(signing.type==='apkstudio' && !await fs.pathExists(signing.keystore)){
-      await log(id,'Generating APK Studio project signing key...');
-      await run(id,keytoolBin,[
-        '-genkeypair','-keystore',signing.keystore,
-        '-storepass',signing.storePass,'-keypass',signing.keyPass,
-        '-alias',signing.alias,'-keyalg','RSA','-keysize','2048',
-        '-validity','10000','-dname','CN=APK Studio,O=APK Studio,C=US','-noprompt'
-      ],[0],{timeoutMs:120000});
+      await ensureAutomaticSigningKey(id);
     }
 
     if(signing.type==='custom' && (!signing.alias || !signing.storePass)){
