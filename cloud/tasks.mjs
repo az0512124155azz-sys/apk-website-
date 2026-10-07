@@ -256,6 +256,7 @@ export async function rebuild(id,{runId}={}){
   const signing=await signingConfigFor(dir);
   const sameRevision=!!meta.editableRevision && meta.buildRevision===meta.editableRevision;
   const sameSigning=meta.buildSigningFingerprint===signing.fingerprint;
+  const modernSigningCache=meta.signingEngine==='apksigner+zipalign';
   let activeStep='preflight';
 
   const stepLog=async(stepId,message)=>{
@@ -280,7 +281,7 @@ export async function rebuild(id,{runId}={}){
   await log(id,'=== BUILD START ===');
   await stepStart('preflight',`Build resources: heap=${javaXmx}, threads=${workerThreads}, local=${localMode}`);
 
-  if(sameRevision && sameSigning && await fs.pathExists(signedArtifact)){
+  if(sameRevision && sameSigning && modernSigningCache && await fs.pathExists(signedArtifact)){
     await stepDone('preflight','Workspace and signing configuration are unchanged.');
     await stepSkip('compile','No source changes detected. Reusing existing compiled APK.');
     await stepSkip('sign','Existing signed APK is still valid for this signing configuration.');
