@@ -12,7 +12,22 @@ New-Item -ItemType Directory -Force -Path $installDir | Out-Null
 Start-Transcript -Path $log -Append | Out-Null
 
 function Download([string]$url,[string]$out){
-  Invoke-WebRequest -UseBasicParsing -Uri $url -OutFile $out
+  if(Test-Path $out){Remove-Item -Force $out -ErrorAction SilentlyContinue}
+  $curl=Get-Command curl.exe -ErrorAction SilentlyContinue
+  if($curl){
+    & $curl.Source -L --fail --retry 5 --retry-delay 2 --connect-timeout 15 --max-time 600 --output $out $url
+    if($LASTEXITCODE -eq 0 -and (Test-Path $out) -and ((Get-Item $out).Length -gt 0)){return}
+    Remove-Item -Force $out -ErrorAction SilentlyContinue
+  }
+  try{
+    Import-Module BitsTransfer -ErrorAction Stop
+    Start-BitsTransfer -Source $url -Destination $out -TransferType Download -Priority Foreground -ErrorAction Stop
+    if((Test-Path $out) -and ((Get-Item $out).Length -gt 0)){return}
+  }catch{
+    Remove-Item -Force $out -ErrorAction SilentlyContinue
+  }
+  Invoke-WebRequest -UseBasicParsing -Uri $url -OutFile $out -TimeoutSec 600
+  if(-not (Test-Path $out) -or (Get-Item $out).Length -eq 0){throw "Download failed: $url"}
 }
 function Expand-ZipClean([string]$zip,[string]$dest){
   if(Test-Path $dest){Remove-Item -Recurse -Force $dest}
@@ -133,6 +148,17 @@ Set shell = CreateObject("WScript.Shell")
 shell.Run "powershell.exe -NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File ""$runner""", 0, False
 "@
 Set-Content -Path $launcher -Value $vbs -Encoding ASCII
+
+# Prefer Task Scheduler so the agent starts reliably in the background at logon.
+# Keep the Startup shortcut as a fallback for systems where task registration
+# is blocked by policy.
+try{
+  Unregister-ScheduledTask -TaskName 'APK Studio Local Agent' -Confirm:$false -ErrorAction SilentlyContinue
+  $taskAction=New-ScheduledTaskAction -Execute "$env:WINDIR\System32\wscript.exe" -Argument ('"' + $launcher + '"')
+  $taskTrigger=New-ScheduledTaskTrigger -AtLogOn -User $env:USERNAME
+  $taskSettings=New-ScheduledTaskSettingsSet -StartWhenAvailable -RestartCount 10 -RestartInterval (New-TimeSpan -Minutes 1) -ExecutionTimeLimit ([TimeSpan]::Zero)
+  Register-ScheduledTask -TaskName 'APK Studio Local Agent' -Action $taskAction -Trigger $taskTrigger -Settings $taskSettings -Description 'Runs APK Studio Local Agent in the background.' -Force | Out-Null
+}catch{}
 
 $startup=Join-Path $env:APPDATA 'Microsoft\\Windows\\Start Menu\\Programs\\Startup\\APK Studio Local Agent.lnk'
 $w=New-Object -ComObject WScript.Shell
