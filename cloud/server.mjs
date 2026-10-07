@@ -18,6 +18,7 @@ const sessionSecret=process.env.SESSION_SECRET||'apk-studio-dev-secret-change-me
 const githubClientId=process.env.GITHUB_CLIENT_ID||'';
 const githubClientSecret=process.env.GITHUB_CLIENT_SECRET||'';
 const publicOrigin=process.env.PUBLIC_ORIGIN||'https://apk-website-sable.vercel.app';
+const AGENT_VERSION='1.1.0';
 app.use(cors({origin:true}));
 app.use((req,_res,next)=>{ console.log(new Date().toISOString(), req.method, req.url); next(); });
 app.use(express.json({limit:'10mb'}));
@@ -302,9 +303,25 @@ async function ensureProjectAvailable(req,id){
   return restored;
 }
 
-app.get('/',(_req,res)=>res.json({name:'APK Studio Cloud API',ok:true,version:'1.0.0'}));
+app.get('/',(_req,res)=>res.json({name:'APK Studio Processor',ok:true,version:AGENT_VERSION,local:process.env.LOCAL_PROCESSOR==='1'}));
 app.get('/health',async(_req,res)=>{
-  res.json({ok:true,version:'1.0.0'});
+  res.json({ok:true,version:AGENT_VERSION,local:process.env.LOCAL_PROCESSOR==='1'});
+});
+
+app.post('/api/local/update',async(req,res,next)=>{
+  try{
+    if(process.env.LOCAL_PROCESSOR!=='1')return res.status(403).json({error:'Local update is only available on This computer mode'});
+    const cloudDir=path.dirname(new URL(import.meta.url).pathname.replace(/^\/(?:[A-Za-z]:)/,m=>m.slice(1)));
+    const installDir=path.dirname(cloudDir);
+    const updater=path.join(cloudDir,'self-update-windows.ps1');
+    if(process.platform!=='win32'||!await fs.pathExists(updater))return res.status(501).json({error:'Local self-update is not available on this platform'});
+    const pid=process.pid;
+    const p=spawn('powershell.exe',['-NoProfile','-ExecutionPolicy','Bypass','-WindowStyle','Hidden','-File',updater,'-InstallDir',installDir,'-ServerPid',String(pid)],{
+      detached:true,stdio:'ignore',windowsHide:true
+    });
+    p.unref();
+    res.status(202).json({ok:true,updating:true,version:AGENT_VERSION});
+  }catch(e){next(e);}
 });
 
 app.get('/api/projects',async(_req,res)=>{
