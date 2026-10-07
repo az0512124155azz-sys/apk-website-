@@ -179,7 +179,7 @@ export async function rebuild(id){
     return;
   }
 
-  await writeMeta(id,{buildStatus:'building',buildError:null,buildCached:false,buildStage:sameRevision?'signing':'rebuild'});
+  await writeMeta(id,{buildStatus:'building',buildError:null,buildCached:false,buildStage:sameRevision?'signing':'rebuild',buildArtifact:null,buildSigned:false});
   await log(id,'=== BUILD START ===');
   await log(id,`Build resources: heap=${javaXmx}, threads=${workerThreads}, local=${localMode}`);
 
@@ -246,6 +246,6 @@ export async function rebuild(id){
   }catch(e){
     const buildError=shortError(e);
     await log(id,'BUILD ERROR: '+buildError);
-    await writeMeta(id,{buildStatus:'error',buildStage:'error',buildError});
+    await writeMeta(id,{buildStatus:'error',buildStage:'error',buildError,buildArtifact:null,buildSigned:false});
   }
 }
